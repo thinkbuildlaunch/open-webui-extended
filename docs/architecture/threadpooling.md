@@ -1,23 +1,59 @@
-# ThreadPooling
+---
+# Machine-readable anchor block — see Directive 8.
+covers_files:
+  - backend/open_webui/config.py
+  - backend/open_webui/main.py
+  - backend/open_webui/routers/auths.py
+  - backend/open_webui/routers/audio.py
+  - backend/open_webui/retrieval/utils.py
+  - backend/open_webui/retrieval/vector/dbs/pinecone.py
+  - backend/open_webui/retrieval/loaders/youtube.py
+  - backend/open_webui/models/users.py
+covers_symbols:
+  - THREAD_POOL_SIZE
+  - current_default_thread_limiter
+  - asyncio.to_thread
+  - ThreadPoolExecutor
+  - run_in_executor
+verified_against_commit: 798421405df4b7d9a16f5671feb601f202fd7ce4
+---
 
-Open WebUI Extended is an async-first application built on FastAPI and asyncio. Since many operations (database queries, LDAP authentication, image generation, vector search) use synchronous libraries, the application bridges async and sync worlds through thread pools. This document covers all thread pool mechanisms, their configuration, and how they interact with other components.
+# Thread Pooling
+
+Open WebUI Extended is an async-first application built on FastAPI and asyncio. Thread
+pools exist to run code from **genuinely blocking, synchronous libraries** off the event
+loop: LDAP (`ldap3`), audio transcoding/transcription, reranking, blocking file/parsing
+work, and a few vector-DB clients. This doc covers each mechanism, its configuration, and
+how it interacts with other components.
+
+> **Read this first — database access is NOT thread-pooled anymore.** Runtime DB access
+> goes through the **async** SQLAlchemy engine and `AsyncSession`, awaited directly (see
+> [sqlalchemy.md](./sqlalchemy.md)). It does **not** go through `asyncio.to_thread()`. A
+> previous version of this doc claimed "every synchronous SQLAlchemy call from an async
+> handler uses `asyncio.to_thread()`" and that the thread pool and DB pool are tightly
+> coupled — **both statements are now false.** The AnyIO thread limiter bounds blocking
+> non-DB work; DB concurrency is governed independently by the async engine's pool.
 
 ---
 
 ## Relevant Files
 
-| File | Purpose |
+| File | Subject (grep for these symbols) |
 |---|---|
-| `backend/open_webui/config.py` (lines 1786-1795) | `THREAD_POOL_SIZE` environment variable definition |
-| `backend/open_webui/main.py` (lines 23, 644-646) | AnyIO thread limiter configuration at startup |
-| `backend/open_webui/socket/main.py` (lines 804-860) | `asyncio.to_thread()` usage in event emitter for DB operations |
-| `backend/open_webui/routers/auths.py` | `asyncio.to_thread()` for LDAP authentication |
-| `backend/open_webui/routers/images.py` | `asyncio.to_thread()` for image generation API calls |
-| `backend/open_webui/routers/chats.py` | `asyncio.to_thread()` for chat export processing |
-| `backend/open_webui/retrieval/utils.py` | `ThreadPoolExecutor` for parallel vector DB queries and reranking |
-| `backend/open_webui/retrieval/vector/dbs/pinecone.py` | `ThreadPoolExecutor(max_workers=5)` for batch upsert |
-| `backend/open_webui/routers/audio.py` | `ThreadPoolExecutor` for parallel audio transcription |
-| `backend/open_webui/retrieval/loaders/youtube.py` | `loop.run_in_executor()` for YouTube content loading |
+| `backend/open_webui/config.py` | `THREAD_POOL_SIZE` definition/parse; `ThreadPoolExecutor(max_workers=2)` Ollama port check |
+| `backend/open_webui/main.py` | `current_default_thread_limiter()` / `total_tokens` — AnyIO limiter setup in the lifespan |
+| `backend/open_webui/routers/auths.py` | `asyncio.to_thread` for blocking `ldap3` bind/search |
+| `backend/open_webui/routers/audio.py` | `asyncio.to_thread` for transcode/convert/compress/split + transcription pipeline |
+| `backend/open_webui/retrieval/utils.py` | `ThreadPoolExecutor` (parallel collection queries) + `asyncio.to_thread` (reranking, bulk fetch) |
+| `backend/open_webui/retrieval/vector/dbs/pinecone.py` | `ThreadPoolExecutor(max_workers=5)` (sync batch) + `run_in_executor` (async batch) |
+| `backend/open_webui/retrieval/loaders/youtube.py` | `loop.run_in_executor(None, self.load)` |
+| `backend/open_webui/models/users.py` | `@throttle(DATABASE_USER_ACTIVE_STATUS_UPDATE_INTERVAL)` on `update_last_active_by_id` |
+
+Additional `asyncio.to_thread` call sites (blocking IO/parsing) live in
+`retrieval/loaders/main.py`, `retrieval/vector/async_client.py`, `routers/files.py`,
+`routers/knowledge.py`, `routers/retrieval.py`, `tools/builtin.py`, `utils/files.py`,
+and `main.py` — enumerate them with the grep in the verification recipe rather than
+trusting a fixed list here.
 
 ---
 
@@ -26,287 +62,198 @@ Open WebUI Extended is an async-first application built on FastAPI and asyncio. 
 ```
                     FastAPI / asyncio Event Loop
                               |
-         +--------------------+--------------------+
-         |                    |                    |
-   AnyIO Thread Limiter  Dedicated Executors   Event Loop Tasks
-   (global, configurable)  (task-specific)     (pure async)
-         |                    |
-         v                    v
-   asyncio.to_thread()   ThreadPoolExecutor
-   - DB queries           - Pinecone (5 workers)
-   - LDAP auth            - Audio transcription
-   - Image gen            - Vector DB queries
-   - Chat export          - Ollama port check (2 workers)
-   - Reranking
+   +--------------------------+---------------------------+
+   |                          |                           |
+AnyIO thread limiter   Dedicated executors          Async I/O (no thread)
+(global, configurable) (task-specific)              - async SQLAlchemy engine
+   |                          |                       - redis.asyncio
+   v                          v                       - aiohttp / httpx
+asyncio.to_thread()    ThreadPoolExecutor /
+- ldap3 bind/search      run_in_executor
+- audio ffmpeg/whisper  - Pinecone sync batch (max_workers=5)
+- reranking             - parallel vector queries (default workers)
+- blocking file/parse   - Ollama port check (max_workers=2)
 ```
 
 ---
 
-## 1. AnyIO Thread Limiter (Global)
+## 1. AnyIO Thread Limiter (global)
 
-### Configuration
+`asyncio.to_thread()` dispatches onto AnyIO's default worker thread pool, which is bounded
+by a **capacity limiter** (a token semaphore). Each `to_thread()` call takes one token;
+when all tokens are held, further calls wait.
 
-```python
-# config.py
-THREAD_POOL_SIZE = os.getenv("THREAD_POOL_SIZE", None)
+**Configuration** — two halves:
 
-# main.py (during lifespan startup)
-if THREAD_POOL_SIZE and THREAD_POOL_SIZE > 0:
-    limiter = anyio.to_thread.current_default_thread_limiter()
-    limiter.total_tokens = THREAD_POOL_SIZE
-```
+- `THREAD_POOL_SIZE` is read and parsed in `config.py`: `os.getenv("THREAD_POOL_SIZE", None)`,
+  coerced to `int` when set, falling back to `None` on a parse error.
+- The lifespan in `main.py` applies it: when `THREAD_POOL_SIZE` is truthy and `> 0`, it
+  sets `anyio.to_thread.current_default_thread_limiter().total_tokens = THREAD_POOL_SIZE`.
 
-### How It Works
-
-AnyIO provides a **capacity limiter** (token-based semaphore) that governs how many threads can be active concurrently for `asyncio.to_thread()` calls. Each call consumes one "token"; when all tokens are in use, subsequent calls wait.
-
-| Setting | Behavior |
+| `THREAD_POOL_SIZE` | Behavior |
 |---|---|
-| `THREAD_POOL_SIZE=None` | AnyIO default (~40 threads) |
-| `THREAD_POOL_SIZE=0` | Not applied (stays at default) |
-| `THREAD_POOL_SIZE=N` | Maximum N concurrent `to_thread()` calls |
-
-### Environment Variable
+| `None` (default) | AnyIO's built-in default limit (40 tokens at time of writing) is left unchanged |
+| `0` | Falsy / not `> 0` → not applied; AnyIO default stays |
+| `N > 0` | At most `N` concurrent `to_thread()` worker threads |
 
 | Variable | Default | Description |
 |---|---|---|
-| `THREAD_POOL_SIZE` | `None` | Maximum concurrent threads for `asyncio.to_thread()`. When `None`, AnyIO uses its default limit (typically 40). |
+| `THREAD_POOL_SIZE` | `None` | Max concurrent `asyncio.to_thread()` workers. `None` ⇒ AnyIO default (≈40 at time of writing). |
 
 ---
 
-## 2. `asyncio.to_thread()` Usage
+## 2. `asyncio.to_thread()` — blocking non-DB work
 
-This is the primary mechanism for running synchronous code from async handlers. All calls go through the AnyIO thread limiter.
+The primary bridge for synchronous libraries. All calls share the AnyIO limiter above.
+Representative sites (contracts, not transcriptions):
 
-### In Socket Event Emitter (`socket/main.py`)
+- **LDAP auth** (`routers/auths.py`): `ldap3` bind and search are blocking, so they run as
+  `await asyncio.to_thread(connection_app.bind)` / `to_thread(... search ...)` /
+  `to_thread(connection_user.bind)`.
+- **Audio** (`routers/audio.py`): ffmpeg-style operations and the transcription pipeline
+  are offloaded — e.g. `to_thread(transcode_audio_to_mp3, …)`, `to_thread(convert_audio_to_mp3, …)`,
+  `to_thread(compress_audio, …)`, `to_thread(split_audio, …)`, and `to_thread(_run_pipeline)` /
+  `to_thread(_run)`. (This replaces the old `ThreadPoolExecutor`-per-chunk approach the
+  previous doc described.)
+- **Retrieval** (`retrieval/utils.py`): reranking runs as
+  `await asyncio.to_thread(self.reranking_function, query, documents)`, and the bulk
+  collection fetch as `to_thread(get_all_items_from_collections, …)`.
 
-The `get_event_emitter()` function creates an async emitter that persists chat data to the database during streaming:
-
-```python
-async def __event_emitter__(event_data):
-    # Emit to WebSocket (async, immediate)
-    await sio.emit("events", {...}, room=f"user:{user_id}")
-
-    # Persist to database (sync, via thread pool)
-    if event_type == "status":
-        await asyncio.to_thread(
-            Chats.add_message_status_to_chat_by_id_and_message_id,
-            chat_id, message_id, event_data.get("data", {})
-        )
-    elif event_type == "message":
-        message = await asyncio.to_thread(
-            Chats.get_message_by_id_and_message_id, chat_id, message_id
-        )
-        content = message.get("content", "") + event_data.get("data", {}).get("content", "")
-        await asyncio.to_thread(
-            Chats.upsert_message_to_chat_by_id_and_message_id,
-            chat_id, message_id, {"content": content}
-        )
-    # ... similar patterns for "replace", "embeds", "files", "source", "citation"
-```
-
-### In Authentication (`routers/auths.py`)
-
-LDAP authentication uses blocking `ldap3` library calls:
-
-```python
-# LDAP bind and search are blocking operations
-result = await asyncio.to_thread(ldap_connection_function, ...)
-```
-
-### In Image Generation (`routers/images.py`)
-
-HTTP requests to external image generation APIs (DALL-E, Stable Diffusion) are blocking:
-
-```python
-response = await asyncio.to_thread(requests.post, url, json=payload, headers=headers)
-```
-
-### In Chat Export (`routers/chats.py`)
-
-Chat data export processing:
-
-```python
-result = await asyncio.to_thread(export_function, ...)
-```
-
-### In Retrieval (`retrieval/utils.py`)
-
-Reranking operations:
-
-```python
-result = await asyncio.to_thread(rerank_function, query, documents)
-```
+> **Not** in this list anymore (the previous doc was stale): the socket event emitter,
+> `routers/images.py`, and `routers/chats.py` no longer call `asyncio.to_thread()`. The
+> emitter awaits async DB methods directly (verify: `grep -c to_thread backend/open_webui/socket/main.py`
+> returns `0`).
 
 ---
 
 ## 3. Dedicated `ThreadPoolExecutor` Instances
 
-Some subsystems create their own `ThreadPoolExecutor` for task-specific parallelism. These are **independent** of the AnyIO thread limiter.
+A few subsystems create their own executor for task-specific parallelism, independent of
+the AnyIO limiter.
 
-### Pinecone Vector DB (`retrieval/vector/dbs/pinecone.py`)
-
-```python
-self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
-```
-
-**Used for**:
-- Batch upsert operations: `executor.submit(upsert_batch, ...)`
-- Async wrappers: `loop.run_in_executor(self._executor, sync_function)`
-
-**Why dedicated**: Pinecone gRPC client also uses `pool_threads=20` internally. The 5-worker executor serializes batch submissions to avoid overwhelming the Pinecone API.
-
-### Audio Transcription (`routers/audio.py`)
-
-```python
-with ThreadPoolExecutor() as executor:
-    futures = [executor.submit(transcribe_chunk, chunk) for chunk in audio_chunks]
-    results = [f.result() for f in futures]
-```
-
-**Why dedicated**: Audio chunks are CPU-intensive and independent. Default worker count (CPU count * 5) allows maximum parallelism.
-
-### Vector DB Queries (`retrieval/utils.py`)
-
-```python
-with ThreadPoolExecutor() as executor:
-    futures = [executor.submit(query_collection, collection) for collection in collections]
-    results = [f.result() for f in futures]
-```
-
-**Why dedicated**: Multiple vector collections are queried in parallel. Each query is independent and may hit different backends.
-
-### Ollama Port Check (`config.py`)
-
-```python
-executor = ThreadPoolExecutor(max_workers=2)
-# Check if Ollama ports are reachable
-```
-
-**Why dedicated**: Small, bounded check with minimal workers needed.
+- **Ollama port check** (`config.py`): `with ThreadPoolExecutor(max_workers=2) as pool:`
+  probes the default Ollama port and a fallback port concurrently
+  (`11434`, falling back to `12434`). Two workers because it is exactly two probes.
+- **Parallel vector queries** (`retrieval/utils.py`): `with ThreadPoolExecutor() as executor:`
+  (default worker count) fans out `process_query_collection` across every
+  (query embedding × collection) pair and collects the futures. Independent per-collection
+  queries that may hit different backends.
+- **Pinecone batch upsert** (`retrieval/vector/dbs/pinecone.py`):
+  `self._executor = ThreadPoolExecutor(max_workers=5)`.
+  > **Directive 4/5 — describe the real wiring.** The 5-worker executor is used by the
+  > **sync** batch path (`self._executor.submit(self.index.upsert, vectors=batch)`), and is
+  > shut down via `self._executor.shutdown(wait=True)`. The 5 workers bound concurrent
+  > batch submissions against the Pinecone client, which itself runs `pool_threads=20`
+  > internally. Note the **async** batch path does *not* use `self._executor` — see §4.
 
 ---
 
 ## 4. `loop.run_in_executor()` Usage
 
-An older pattern that's equivalent to `asyncio.to_thread()` but allows specifying a custom executor:
+`run_in_executor(None, fn)` schedules `fn` on the **default** executor (the same AnyIO-
+managed pool that backs `to_thread`); passing an explicit executor uses that one instead.
 
-### Pinecone Async Operations
-
-```python
-loop = asyncio.get_event_loop()
-result = await loop.run_in_executor(self._executor, sync_insert_function, data)
-```
-
-### YouTube Content Loading
-
-```python
-loop = asyncio.get_event_loop()
-result = await loop.run_in_executor(None, youtube_loader.load)  # None = default executor
-```
-
-When `None` is passed as the executor, it uses the default `ThreadPoolExecutor` (same pool governed by AnyIO in modern Python, but separate from the AnyIO limiter for explicit executor usage).
+- **YouTube loader** (`retrieval/loaders/youtube.py`): `await loop.run_in_executor(None, self.load)`
+  — `None` ⇒ default executor.
+- **Pinecone async batch** (`pinecone.py`): the async insert/upsert paths build
+  `loop.run_in_executor(None, functools.partial(self.index.upsert, vectors=batch))` per
+  batch and `await` them together. These use the **default** executor (`None`), *not*
+  the 5-worker `self._executor` from §3 — a point the previous doc got wrong.
 
 ---
 
 ## Thread Pool Sizing Guidelines
 
-### Relationship to Database Pool
+> **Directive 6 — the old DB coupling no longer applies.** Because runtime DB access is
+> async (it does not consume AnyIO tokens), the previous rule
+> `THREAD_POOL_SIZE >= DATABASE_POOL_SIZE + DATABASE_POOL_MAX_OVERFLOW` is obsolete. Do not
+> reintroduce it. The two pools are now independent:
+> - The **AnyIO limiter** (`THREAD_POOL_SIZE`) bounds concurrent *blocking non-DB* work
+>   (LDAP, audio, reranking, file/parse).
+> - DB concurrency is bounded by the **async engine's pool** (`DATABASE_POOL_SIZE` /
+>   `DATABASE_POOL_MAX_OVERFLOW`, or the async-SQLite default of 512 — see
+>   [sqlalchemy.md](./sqlalchemy.md)).
 
-The thread pool and database connection pool are tightly coupled:
+Practical guidance:
 
-```
-Request arrives (async)
-  -> asyncio.to_thread(db_operation)     # Consumes 1 AnyIO thread token
-    -> SessionLocal()                     # Checks out 1 DB connection from QueuePool
-    -> execute query
-    -> session.close()                    # Returns DB connection to pool
-  -> Thread token released
-```
-
-**Key constraint**: If `THREAD_POOL_SIZE > DATABASE_POOL_SIZE + DATABASE_POOL_MAX_OVERFLOW`, some threads will block waiting for a database connection. Conversely, if `THREAD_POOL_SIZE < DATABASE_POOL_SIZE`, the database pool is underutilized.
-
-**Recommendation**:
-```
-THREAD_POOL_SIZE >= DATABASE_POOL_SIZE + DATABASE_POOL_MAX_OVERFLOW
-```
-
-### Sizing Examples
-
-| Deployment | THREAD_POOL_SIZE | DATABASE_POOL_SIZE | DATABASE_POOL_MAX_OVERFLOW | Notes |
-|---|---|---|---|---|
-| Development | `None` (default ~40) | `None` (default) | `0` | Works out of the box |
-| Small production | `20` | `10` | `5` | Allows headroom for non-DB threads |
-| Large production | `100` | `50` | `20` | High concurrency, PostgreSQL recommended |
-| SQLite | `None` | N/A (NullPool) | N/A | No pooling for SQLite; threads create/close connections |
+- Leave `THREAD_POOL_SIZE` at its default unless you see contention on blocking work
+  (LDAP logins stalling, audio transcription queuing).
+- Size it to the expected concurrency of blocking operations, not to the DB pool.
+- CPU-bound batches (audio, vector queries) already use dedicated executors, so they do
+  not starve the shared limiter.
 
 ---
 
 ## Interaction with Other Components
 
-### ThreadPooling + SQLAlchemy
-
-Every synchronous SQLAlchemy call from an async handler uses `asyncio.to_thread()`. The `SessionLocal` factory creates a new session per call, and `scoped_session` ensures thread-local isolation:
-
-```python
-# Async handler
-async def handle_event():
-    result = await asyncio.to_thread(Users.get_user_by_id, user_id)
-    # Users.get_user_by_id internally:
-    #   with get_db() as db:
-    #       return db.get(User, id)
-```
-
-### ThreadPooling + WebSockets
-
-The event emitter is the highest-throughput consumer of thread pool tokens. During active chat streaming, each message chunk may trigger multiple `to_thread()` calls for database persistence:
-
-```
-Chat stream chunk arrives
-  -> emit to WebSocket (async, no thread)
-  -> asyncio.to_thread(Chats.get_message_by_id_and_message_id)  # Thread 1
-  -> asyncio.to_thread(Chats.upsert_message_to_chat_by_id_and_message_id)  # Thread 2
-```
-
-With many concurrent chat sessions, thread pool exhaustion is the primary bottleneck.
-
-### ThreadPooling + Heartbeats
-
-Each heartbeat triggers a database update:
-
-```python
-# In heartbeat handler
-Users.update_last_active_by_id(user["id"])  # Synchronous DB call
-```
-
-This runs on the calling thread (the Socket.IO event handler thread), not via `asyncio.to_thread()`. The `DATABASE_USER_ACTIVE_STATUS_UPDATE_INTERVAL` env variable can throttle this to reduce DB load.
-
-### ThreadPooling + Redis
-
-Redis operations are inherently async (using `redis.asyncio`) and do **not** consume thread pool tokens. Only synchronous Redis operations (via `RedisLock` and sync `RedisDict`) use the sync Redis client, which manages its own connection pool.
+- **SQLAlchemy** — runtime queries use the async engine + `AsyncSession`, awaited
+  directly; they do not pass through `to_thread`. The sync engine and `to_thread` are
+  unrelated paths. See [sqlalchemy.md](./sqlalchemy.md).
+- **WebSockets** — the socket event emitter (`get_event_emitter` in `socket/main.py`)
+  awaits async `Chats.*` methods during streaming; it consumes **no** thread tokens. See
+  [heartbeats.md](./heartbeats.md).
+- **Heartbeats** — the `heartbeat` handler `await`s `Users.update_last_active_by_id()`,
+  which is `async` and decorated with `@throttle(DATABASE_USER_ACTIVE_STATUS_UPDATE_INTERVAL)`.
+  It is **not** a synchronous call on the handler thread (a claim the previous doc made),
+  and the throttle is enforced by the decorator, not by `to_thread`. See
+  [heartbeats.md](./heartbeats.md).
+- **Redis** — runtime Redis is `redis.asyncio` and consumes no thread tokens. The sync
+  Redis client used by `RedisLock` / `RedisDict` (single-instance/startup paths) manages
+  its own connection pool. See [redis.md](./redis.md).
 
 ---
 
 ## Debugging Thread Pool Issues
 
-### Symptoms of Thread Pool Exhaustion
+**Symptoms** of AnyIO limiter saturation: blocking operations (LDAP login, audio
+transcription) queue and stall; `asyncio` slow-callback warnings; health endpoints fine
+(they are async and do not depend on `to_thread`).
 
-- Requests hang or timeout without error
-- Database queries that normally take milliseconds take seconds
-- `asyncio` warnings about slow callbacks
-- Health check endpoints stop responding (if they use `to_thread()`)
+**Diagnosis:**
+- Inspect the limit: log `anyio.to_thread.current_default_thread_limiter().total_tokens`.
+- Live threads: `threading.active_count()`.
+- DB pool (separate concern): `async_engine.pool.status()` for checked-out vs available
+  async connections.
+- `GLOBAL_LOG_LEVEL=DEBUG` for more detail.
 
-### Diagnosis
+**Mitigation:**
+- Raise `THREAD_POOL_SIZE` when blocking *non-DB* work is the bottleneck.
+- Raise `DATABASE_POOL_SIZE` when the async DB pool is the bottleneck (distinct from the
+  thread limiter).
+- Move heavy CPU-bound work onto a dedicated executor so it does not compete with the
+  shared limiter.
+- Throttle activity writes with `DATABASE_USER_ACTIVE_STATUS_UPDATE_INTERVAL`.
 
-1. **Check current pool size**: Log `anyio.to_thread.current_default_thread_limiter().total_tokens`
-2. **Monitor active threads**: `threading.active_count()` in a health endpoint
-3. **Database pool stats**: `engine.pool.status()` shows checked-out vs. available connections
-4. **Increase logging**: Set `GLOBAL_LOG_LEVEL=DEBUG` to see thread pool contention
+---
 
-### Mitigation
+## Verification Recipe
 
-1. **Increase `THREAD_POOL_SIZE`**: Most direct solution
-2. **Increase `DATABASE_POOL_SIZE`**: If threads are blocking on DB connections
-3. **Reduce DB calls**: Enable `DATABASE_ENABLE_SESSION_SHARING` to reuse sessions
-4. **Throttle heartbeat DB updates**: Set `DATABASE_USER_ACTIVE_STATUS_UPDATE_INTERVAL`
-5. **Use dedicated executors**: For CPU-intensive work (audio, vector queries) so they don't compete with DB threads
+Run from the repo root. If any line's expectation is violated, the doc is stale and must
+be re-audited before it is trusted.
+
+```bash
+# THREAD_POOL_SIZE definition + AnyIO limiter application
+grep -rn "THREAD_POOL_SIZE = os.getenv" backend/open_webui/config.py
+grep -rn "current_default_thread_limiter\|total_tokens = THREAD_POOL_SIZE" backend/open_webui/main.py
+
+# to_thread is for blocking NON-DB work; DB emitter no longer uses it
+grep -rn "asyncio.to_thread" backend/open_webui/routers/auths.py backend/open_webui/routers/audio.py backend/open_webui/retrieval/utils.py
+test "$(grep -c to_thread backend/open_webui/socket/main.py)" = 0 && echo "emitter has no to_thread (expected)"
+test "$(grep -c to_thread backend/open_webui/routers/images.py)" = 0 && echo "images has no to_thread (expected)"
+test "$(grep -c to_thread backend/open_webui/routers/chats.py)" = 0 && echo "chats has no to_thread (expected)"
+
+# Dedicated executors
+grep -rn "ThreadPoolExecutor(max_workers=2)" backend/open_webui/config.py
+grep -rn "with ThreadPoolExecutor() as executor" backend/open_webui/retrieval/utils.py
+grep -rn "ThreadPoolExecutor(max_workers=5)\|self._executor.submit\|pool_threads=20" backend/open_webui/retrieval/vector/dbs/pinecone.py
+
+# run_in_executor uses the DEFAULT executor (None), not self._executor
+grep -rn "run_in_executor(None" backend/open_webui/retrieval/loaders/youtube.py backend/open_webui/retrieval/vector/dbs/pinecone.py
+
+# Heartbeat DB write is async + throttled (not a sync thread call)
+grep -rn "@throttle(DATABASE_USER_ACTIVE_STATUS_UPDATE_INTERVAL)" backend/open_webui/models/users.py
+grep -rn "async def update_last_active_by_id" backend/open_webui/models/users.py
+
+# Enumerate every to_thread call site currently in the tree
+grep -rln "asyncio.to_thread" backend/open_webui/
+```
