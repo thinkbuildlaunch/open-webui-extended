@@ -8,10 +8,10 @@ The heartbeat system in Open WebUI Extended provides client liveness detection, 
 
 | File | Purpose |
 |---|---|
-| `src/routes/+layout.svelte` (lines 103, 141-147, 175-181) | Client-side heartbeat emission (30s interval) |
-| `backend/open_webui/socket/main.py` (lines 83-84, 103, 179-201, 204-253, 410-415) | Server-side heartbeat handler, ping/pong config, session reaping, usage cleanup |
-| `backend/open_webui/socket/utils.py` (lines 9-47) | `RedisLock` used for distributed cleanup coordination |
-| `backend/open_webui/env.py` (lines 779-789) | `WEBSOCKET_SERVER_PING_INTERVAL` and `WEBSOCKET_SERVER_PING_TIMEOUT` configuration |
+| `src/routes/+layout.svelte` (lines 111, 171-177, 222-225) | Client-side heartbeat emission (30s interval) |
+| `backend/open_webui/socket/main.py` (lines 76-91 ping/pong config, 96 timeout, 167-187 session reaping, 190-231 usage cleanup, 405-411 heartbeat handler) | Server-side heartbeat handler, ping/pong config, session reaping, usage cleanup |
+| `backend/open_webui/socket/utils.py` (lines 16-50) | `RedisLock` used for distributed cleanup coordination |
+| `backend/open_webui/env.py` (lines 478-488) | `WEBSOCKET_SERVER_PING_INTERVAL` and `WEBSOCKET_SERVER_PING_TIMEOUT` configuration |
 
 ---
 
@@ -77,7 +77,7 @@ async def heartbeat(sid, data):
     user = SESSION_POOL.get(sid)
     if user:
         SESSION_POOL[sid] = {**user, "last_seen_at": int(time.time())}
-        Users.update_last_active_by_id(user["id"])
+        await Users.update_last_active_by_id(user["id"])
 ```
 
 **What happens on each heartbeat**:
@@ -165,10 +165,15 @@ Time(s)  Client                    Server
 
 --- OR if disconnect event was missed (e.g., instance crash) ---
 
-120                                periodic_session_pool_cleanup() runs
-                                   now(210) - last_seen_at(90) = 120 > 120
+240                                periodic_session_pool_cleanup() runs
+                                   now(240) - last_seen_at(90) = 150 > 120
                                    Reaps session
 ```
+
+> The cleanup loop sleeps `SESSION_POOL_TIMEOUT` (120s) between scans, and the
+> reap condition is strictly `now - last_seen_at > 120`, so an orphaned session
+> is removed on the first scan that occurs more than 120s after its last
+> heartbeat (here, the scan at ~240s).
 
 ---
 
@@ -273,13 +278,10 @@ There are two paths for session cleanup:
 
 ### Heartbeats + SQLAlchemy
 - Each heartbeat triggers `Users.update_last_active_by_id()`, which updates the `last_active_at` column in the database
+- This is a fully `async` method (`async def`) that uses an `AsyncSession` via `get_async_db_context()` and is `await`ed directly inside the heartbeat handler — it issues a non-blocking `UPDATE ... SET last_active_at` and commits
 - This provides a persistent record of user activity beyond the in-memory/Redis session state
 
 ### Heartbeats + WebSockets
 - Heartbeats ride on the WebSocket connection established by Socket.IO
 - If the WebSocket drops, the heartbeat interval is cleared client-side
 - The Engine.IO ping/pong provides the first line of defense for connection health
-
-### Heartbeats + ThreadPooling
-- The `Users.update_last_active_by_id()` call in the heartbeat handler is a synchronous database operation called from an async context
-- It runs on the default thread pool (governed by `THREAD_POOL_SIZE`)
