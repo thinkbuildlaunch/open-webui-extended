@@ -9,17 +9,16 @@ Redis serves as the central shared-state and messaging backbone for Open WebUI E
 | File | Purpose |
 |---|---|
 | `backend/open_webui/utils/redis.py` | Connection management, Sentinel proxy, connection caching |
-| `backend/open_webui/env.py` (lines 436-473) | Redis environment variable definitions |
+| `backend/open_webui/env.py` (lines 367-422 core, 440-469 WebSocket-specific) | Redis environment variable definitions |
 | `backend/open_webui/socket/utils.py` | `RedisDict`, `RedisLock`, `YdocManager` - Redis-backed data structures |
 | `backend/open_webui/socket/main.py` | WebSocket Redis integration, `SESSION_POOL`, `USAGE_POOL`, `MODELS` |
 | `backend/open_webui/tasks.py` | Distributed task management via Redis hashes and pub/sub |
-| `backend/open_webui/config.py` | `AppConfig` persistent configuration backed by Redis |
-| `backend/open_webui/main.py` (lines 630-642) | Redis initialization at application startup |
+| `backend/open_webui/internal/config.py` (line 182) | `AppConfig` persistent configuration backed by Redis |
+| `backend/open_webui/main.py` (line 664) | Redis initialization at application startup |
 | `backend/open_webui/utils/rate_limit.py` | Redis-backed rolling-window rate limiter |
 | `backend/open_webui/utils/auth.py` | Token revocation with Redis TTL keys |
 | `backend/open_webui/routers/auths.py` | Rate limiting on authentication endpoints |
 | `backend/open_webui/utils/telemetry/instrumentors.py` | OpenTelemetry Redis instrumentation |
-| `backend/open_webui/test/util/test_redis.py` | Test suite for Sentinel proxy |
 
 ---
 
@@ -48,11 +47,11 @@ This is the primary factory function for obtaining Redis clients. It supports th
 
 ### Connection Caching
 
-Connections are cached in a module-level `_CONNECTION_CACHE` dictionary keyed by `(redis_url, sentinels_tuple, async_mode, decode_responses)`. This ensures only one connection per unique configuration exists.
+Connections are cached in a module-level `_CONNECTION_POOL` dictionary keyed by `(redis_url, sentinels_tuple, async_mode, decode_responses)`. This ensures only one connection per unique configuration exists.
 
 ### `get_redis_client()` (`utils/redis.py`)
 
-A convenience wrapper that calls `get_redis_connection()` with the global environment variables (`REDIS_URL`, `REDIS_SENTINEL_HOSTS`, etc.) and returns `None` on failure instead of raising.
+A convenience wrapper that calls `get_redis_connection()` with the global environment variables (`REDIS_URL`, `REDIS_SENTINEL_HOSTS`, etc.). It returns `None` when Redis is not configured (no `REDIS_URL` and no sentinels) or when the connection attempt raises, instead of propagating the error. It accepts an `async_mode` flag (the lifespan startup passes `async_mode=True`).
 
 ---
 
@@ -65,8 +64,10 @@ A convenience wrapper that calls `get_redis_connection()` with the global enviro
 | `REDIS_KEY_PREFIX` | `open-webui` | Namespace prefix prepended to all Redis keys to avoid collisions |
 | `REDIS_SENTINEL_HOSTS` | `""` | Comma-separated sentinel hostnames (e.g., `sentinel1,sentinel2,sentinel3`) |
 | `REDIS_SENTINEL_PORT` | `26379` | Port for all sentinel instances |
-| `REDIS_SENTINEL_MAX_RETRY_COUNT` | `2` | Number of retry attempts on `ConnectionError` or `ReadOnlyError` (minimum 1) |
+| `REDIS_SENTINEL_MAX_RETRY_COUNT` | `2` | Number of retry attempts on `ConnectionError` or `ReadOnlyError` (values `< 1` are reset to `2`) |
 | `REDIS_SOCKET_CONNECT_TIMEOUT` | `None` | TCP connection timeout in seconds (float) |
+| `REDIS_SOCKET_KEEPALIVE` | `False` | When `True`, enables TCP keepalive on the socket |
+| `REDIS_HEALTH_CHECK_INTERVAL` | `None` | Seconds between redis-py connection health checks (values `<= 0` become `None`) |
 | `REDIS_RECONNECT_DELAY` | `None` | Delay between sentinel failover retries in milliseconds (float) |
 
 ### WebSocket-Specific Redis Variables
@@ -110,6 +111,9 @@ All keys are prefixed with `{REDIS_KEY_PREFIX}:` (default: `open-webui:`).
 |---|---|---|
 | `{prefix}:ydoc:documents:{doc_id}:updates` | List | Ordered Yjs CRDT updates for a document |
 | `{prefix}:ydoc:documents:{doc_id}:users` | Set | Session IDs of users editing the document |
+| `{prefix}:ydoc:documents:session:{sid}:documents` | Set | Per-session reverse index of joined documents (so disconnect cleanup avoids a keyspace `SCAN`) |
+
+> `doc_id` is normalized before use: `YdocManager` replaces `:` with `_` in storage keys (so `note:abc` becomes `note_abc`).
 
 ### Distributed Locks
 
@@ -128,7 +132,8 @@ All keys are prefixed with `{REDIS_KEY_PREFIX}:` (default: `open-webui:`).
 
 | Key | Type | Purpose |
 |---|---|---|
-| `{prefix}:auth:token:{jti}:revoked` | String | Revoked JWT token marker (expires with JWT) |
+| `{prefix}:auth:token:{jti}:revoked` | String | Per-token revocation marker, keyed by JWT `jti` (TTL set to the token's remaining lifetime). Used for user-initiated sign-out. |
+| `{prefix}:auth:user:{user_id}:revoked_at` | String | Per-user revocation timestamp. Used by OIDC back-channel logout when individual `jti` values are unknown — tokens with `iat <= revoked_at` are rejected. |
 
 ### Configuration
 
@@ -152,7 +157,7 @@ class RedisDict:
 - **Storage**: Redis Hash (`HSET`/`HGET`/`HDEL`/`HGETALL`)
 - **Serialization**: JSON for values
 - **Operations**: `__setitem__`, `__getitem__`, `__delitem__`, `__contains__`, `__len__`, `keys()`, `values()`, `items()`, `get()`, `set()`, `clear()`, `update()`, `setdefault()`
-- **Atomic bulk set**: `set(mapping)` uses a pipeline to `DELETE` + `HSET` atomically
+- **Bulk set**: `set(mapping)` does **not** delete the whole hash. It issues an `HSET` of all new values followed by an `HDEL` of any keys no longer present, deliberately avoiding a whole-hash `DELETE` so concurrent readers never observe an empty dict. It also keeps a per-process signature (SHA-256 of the serialized mapping) and skips the write entirely when the mapping is unchanged from the last one this process wrote.
 
 ### `RedisLock` (`socket/utils.py`)
 
@@ -202,6 +207,8 @@ async for message in pubsub.listen():
     # Cancel local task if we own it
 ```
 
+Publishing goes through `redis_send_command()`, which detects cluster clients (via a `nodes_manager` attribute) and falls back to `execute_command("PUBLISH", ...)` because `RedisCluster` does not expose `publish()` directly; standalone/sentinel clients use `redis.publish()`.
+
 ### Socket.IO Cross-Instance Events
 
 When `WEBSOCKET_MANAGER=redis`, Socket.IO's `AsyncRedisManager` handles event fan-out automatically via its own pub/sub channels.
@@ -212,14 +219,10 @@ When `WEBSOCKET_MANAGER=redis`, Socket.IO's `AsyncRedisManager` handles event fa
 
 1. **Application startup** (`main.py` lifespan):
    ```python
-   app.state.redis = get_redis_connection(
-       redis_url=REDIS_URL,
-       redis_sentinels=get_sentinels_from_env(REDIS_SENTINEL_HOSTS, REDIS_SENTINEL_PORT),
-       redis_cluster=REDIS_CLUSTER,
-       async_mode=True,
-   )
+   app.state.redis = get_redis_client(async_mode=True)
    ```
-2. If Redis is available, starts `redis_task_command_listener` as a background task
+   (`get_redis_client()` reads `REDIS_URL`, `REDIS_SENTINEL_HOSTS`/`REDIS_SENTINEL_PORT`, and `REDIS_CLUSTER` from the environment, returning `None` when Redis is not configured.)
+2. If Redis is available (`app.state.redis is not None`), starts `redis_task_command_listener` as a background task
 3. **Socket module** (`socket/main.py`): If `WEBSOCKET_MANAGER=redis`, creates:
    - `AsyncRedisManager` for Socket.IO
    - `RedisDict` instances for `SESSION_POOL`, `USAGE_POOL`, `MODELS`
