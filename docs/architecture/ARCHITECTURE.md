@@ -9,10 +9,10 @@ covers_files:
   - backend/open_webui/config.py
   - backend/open_webui/utils/redis.py
 covers_symbols:
-  - SESSION_POOL
-  - async_engine
-  - THREAD_POOL_SIZE
-  - current_default_thread_limiter
+  - { symbol: SESSION_POOL_TIMEOUT, file: backend/open_webui/socket/main.py }
+  - { symbol: get_async_db_context, file: backend/open_webui/internal/db.py }
+  - { symbol: THREAD_POOL_SIZE, file: backend/open_webui/config.py }
+  - { symbol: lifespan, file: backend/open_webui/main.py }
 verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
 ---
 

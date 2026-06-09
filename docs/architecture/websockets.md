@@ -10,16 +10,17 @@ covers_files:
   - src/lib/stores/index.ts
   - src/lib/components/common/RichTextInput/Collaboration.ts
 covers_symbols:
-  - connect
-  - disconnect
-  - user_join
-  - get_event_emitter
-  - get_event_call
-  - normalize_document_id
-  - WebsocketUpgradeGuardMiddleware
-  - SocketIOCollaborationProvider
-  - WEBSOCKET_MANAGER
-  - WEBSOCKET_SERVER_PING_INTERVAL
+  - { symbol: user_join, file: backend/open_webui/socket/main.py }
+  - { symbol: get_event_emitter, file: backend/open_webui/socket/main.py }
+  - { symbol: get_event_call, file: backend/open_webui/socket/main.py }
+  - { symbol: _make_channel_emitter, file: backend/open_webui/socket/main.py }
+  - { symbol: normalize_document_id, file: backend/open_webui/socket/main.py }
+  - { symbol: WebsocketUpgradeGuardMiddleware, file: backend/open_webui/utils/asgi_middleware.py }
+  - { symbol: setupSocket, file: src/routes/+layout.svelte }
+  - { symbol: SocketIOCollaborationProvider, file: src/lib/components/common/RichTextInput/Collaboration.ts }
+  - { symbol: SimpleAwareness, file: src/lib/components/common/RichTextInput/Collaboration.ts }
+  - { symbol: WEBSOCKET_MANAGER, file: backend/open_webui/env.py }
+  - { symbol: WEBSOCKET_SERVER_PING_INTERVAL, file: backend/open_webui/env.py }
 verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
 ---
 

@@ -1,15 +1,20 @@
-# TypeScript
-*.ts text eol=lf
-*.tsx text eol=lf
+# Python — `diff=python` gives function/class funcname anchors so
+# `git log -L:<symbol>:<file>` resolves (Directive 11.2).
+*.py text eol=lf diff=python
+
+# TypeScript — `diff=jsfunc` is a custom driver; its xfuncname regex is
+# supplied by tools/check_doc_staleness.sh via `git -c diff.jsfunc.xfuncname=...`.
+*.ts text eol=lf diff=jsfunc
+*.tsx text eol=lf diff=jsfunc
 
 # JavaScript
-*.js text eol=lf
-*.jsx text eol=lf
-*.mjs text eol=lf
-*.cjs text eol=lf
+*.js text eol=lf diff=jsfunc
+*.jsx text eol=lf diff=jsfunc
+*.mjs text eol=lf diff=jsfunc
+*.cjs text eol=lf diff=jsfunc
 
 # Svelte
-*.svelte text eol=lf
+*.svelte text eol=lf diff=jsfunc
 
 # HTML/CSS
 *.html text eol=lf

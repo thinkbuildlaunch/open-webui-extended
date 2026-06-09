@@ -10,11 +10,13 @@ covers_files:
   - backend/open_webui/retrieval/loaders/youtube.py
   - backend/open_webui/models/users.py
 covers_symbols:
-  - THREAD_POOL_SIZE
-  - current_default_thread_limiter
-  - asyncio.to_thread
-  - ThreadPoolExecutor
-  - run_in_executor
+  - { symbol: THREAD_POOL_SIZE, file: backend/open_webui/config.py }
+  - { symbol: _resolve_ollama_base_url, file: backend/open_webui/config.py }
+  - { symbol: lifespan, file: backend/open_webui/main.py }
+  - { symbol: update_last_active_by_id, file: backend/open_webui/models/users.py }
+  - { symbol: process_query_collection, file: backend/open_webui/retrieval/utils.py }
+  - { symbol: PineconeClient, file: backend/open_webui/retrieval/vector/dbs/pinecone.py }
+  - { symbol: aload, file: backend/open_webui/retrieval/loaders/youtube.py }
 verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
 ---
 

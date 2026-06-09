@@ -7,13 +7,13 @@ covers_files:
   - backend/open_webui/models/users.py
   - backend/open_webui/env.py
 covers_symbols:
-  - heartbeat
-  - SESSION_POOL
-  - SESSION_POOL_TIMEOUT
-  - periodic_session_pool_cleanup
-  - Users.update_last_active_by_id
-  - WEBSOCKET_SERVER_PING_INTERVAL
-  - WEBSOCKET_SERVER_PING_TIMEOUT
+  - { symbol: heartbeat, file: backend/open_webui/socket/main.py }
+  - { symbol: SESSION_POOL_TIMEOUT, file: backend/open_webui/socket/main.py }
+  - { symbol: periodic_session_pool_cleanup, file: backend/open_webui/socket/main.py }
+  - { symbol: periodic_usage_pool_cleanup, file: backend/open_webui/socket/main.py }
+  - { symbol: update_last_active_by_id, file: backend/open_webui/models/users.py }
+  - { symbol: WEBSOCKET_SERVER_PING_INTERVAL, file: backend/open_webui/env.py }
+  - { symbol: WEBSOCKET_SERVER_PING_TIMEOUT, file: backend/open_webui/env.py }
 verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
 ---
 

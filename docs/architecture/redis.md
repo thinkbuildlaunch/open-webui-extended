@@ -12,17 +12,17 @@ covers_files:
   - backend/open_webui/env.py
   - backend/open_webui/utils/telemetry/instrumentors.py
 covers_symbols:
-  - get_redis_connection
-  - get_redis_client
-  - SentinelRedisProxy
-  - RedisDict
-  - RedisLock
-  - YdocManager
-  - redis_task_command_listener
-  - redis_send_command
-  - AppConfig
-  - RateLimiter
-  - redis_request_hook
+  - { symbol: get_redis_connection, file: backend/open_webui/utils/redis.py }
+  - { symbol: get_redis_client, file: backend/open_webui/utils/redis.py }
+  - { symbol: SentinelRedisProxy, file: backend/open_webui/utils/redis.py }
+  - { symbol: RedisDict, file: backend/open_webui/socket/utils.py }
+  - { symbol: RedisLock, file: backend/open_webui/socket/utils.py }
+  - { symbol: YdocManager, file: backend/open_webui/socket/utils.py }
+  - { symbol: redis_task_command_listener, file: backend/open_webui/tasks.py }
+  - { symbol: redis_send_command, file: backend/open_webui/tasks.py }
+  - { symbol: AppConfig, file: backend/open_webui/internal/config.py }
+  - { symbol: RateLimiter, file: backend/open_webui/utils/rate_limit.py }
+  - { symbol: redis_request_hook, file: backend/open_webui/utils/telemetry/instrumentors.py }
 verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
 ---
 

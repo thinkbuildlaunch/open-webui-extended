@@ -12,17 +12,16 @@ covers_files:
   - backend/open_webui/retrieval/vector/dbs/mariadb_vector.py
   - backend/open_webui/retrieval/vector/dbs/opengauss.py
 covers_symbols:
-  - engine
-  - async_engine
-  - SessionLocal
-  - AsyncSessionLocal
-  - get_async_db
-  - get_async_db_context
-  - JSONField
-  - _make_async_url
-  - run_migrations
-  - get_existing_tables
-  - get_revision_id
+  - { symbol: JSONField, file: backend/open_webui/internal/db.py }
+  - { symbol: _make_async_url, file: backend/open_webui/internal/db.py }
+  - { symbol: get_session, file: backend/open_webui/internal/db.py }
+  - { symbol: get_async_db, file: backend/open_webui/internal/db.py }
+  - { symbol: get_async_db_context, file: backend/open_webui/internal/db.py }
+  - { symbol: SessionLocal, file: backend/open_webui/internal/db.py }
+  - { symbol: AsyncSessionLocal, file: backend/open_webui/internal/db.py }
+  - { symbol: run_migrations, file: backend/open_webui/config.py }
+  - { symbol: get_existing_tables, file: backend/open_webui/migrations/util.py }
+  - { symbol: get_revision_id, file: backend/open_webui/migrations/util.py }
 verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
 ---
 
