@@ -6,7 +6,7 @@ covers_files:
 covers_symbols:
   - { symbol: check_doc_staleness, file: tools/check_doc_staleness.sh }
   - { file: .gitattributes, whole_file: true }
-verified_against_commit: 20c1b5f5041a928cb31bf490c80fb275348fe2af
+verified_against_commit: 226c29246a5429bdab6a62aa85ad6f7bd3f9598d
 ---
 
 # Documentation Standard
