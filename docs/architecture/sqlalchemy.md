@@ -23,7 +23,7 @@ covers_symbols:
   - run_migrations
   - get_existing_tables
   - get_revision_id
-verified_against_commit: d3a193289454d858de26362afb672f128f506388
+verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
 ---
 
 # SQLAlchemy

@@ -15,7 +15,7 @@ covers_symbols:
   - asyncio.to_thread
   - ThreadPoolExecutor
   - run_in_executor
-verified_against_commit: 798421405df4b7d9a16f5671feb601f202fd7ce4
+verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
 ---
 
 # Thread Pooling

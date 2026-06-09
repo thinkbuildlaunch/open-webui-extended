@@ -14,7 +14,7 @@ covers_symbols:
   - Users.update_last_active_by_id
   - WEBSOCKET_SERVER_PING_INTERVAL
   - WEBSOCKET_SERVER_PING_TIMEOUT
-verified_against_commit: 0f1ed813d43a11bc13afd682fec538b5cb590e32
+verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
 ---
 
 # Heartbeats

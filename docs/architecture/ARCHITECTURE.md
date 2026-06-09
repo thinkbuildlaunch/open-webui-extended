@@ -1,3 +1,21 @@
+---
+# Machine-readable anchor block — see the documentation standard, Directive 8.
+# This is an index/overview; per-component facts live in the linked docs below,
+# each of which carries its own anchor block and verification recipe.
+covers_files:
+  - backend/open_webui/socket/main.py
+  - backend/open_webui/internal/db.py
+  - backend/open_webui/main.py
+  - backend/open_webui/config.py
+  - backend/open_webui/utils/redis.py
+covers_symbols:
+  - SESSION_POOL
+  - async_engine
+  - THREAD_POOL_SIZE
+  - current_default_thread_limiter
+verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
+---
+
 # Open WebUI Extended - Infrastructure Architecture Overview
 
 This document provides a comprehensive overview of the core infrastructure components that power Open WebUI Extended. Each component is designed to work both independently and in concert, enabling a scalable, real-time, multi-instance deployment.
@@ -27,12 +45,12 @@ This document provides a comprehensive overview of the core infrastructure compo
     v
  FastAPI + Socket.IO ASGI Server
     |         |              |
-    |         |              +---> SQLAlchemy (PostgreSQL / SQLite)
-    |         |                      |
+    |         |              +---> SQLAlchemy async engine (PostgreSQL / SQLite)
+    |         |                      |   (awaited directly — NOT thread-pooled)
     |         |                      +---> QueuePool / NullPool (connection pooling)
     |         |
     |         +---> ThreadPoolExecutor / AnyIO thread limiter
-    |                (sync DB calls, LDAP, image gen, etc.)
+    |                (blocking NON-DB work: LDAP, audio, reranking)
     |
     +---> Redis (standalone / Sentinel / Cluster)
              |
@@ -70,19 +88,22 @@ The heartbeat system has three layers:
 2. **Application heartbeat** (client-initiated): Client emits `heartbeat` event every 30s. Server updates `SESSION_POOL[sid].last_seen_at`.
 3. **Session reaping** (server-side cleanup): Background task scans `SESSION_POOL` every 120s. Any session without a heartbeat for >120s is reaped. Uses `RedisLock` to ensure only one instance performs cleanup.
 
-#### 3. WebSockets + SQLAlchemy + ThreadPooling (Database Updates via Socket Events)
+#### 3. WebSockets + SQLAlchemy (Async Database Updates via Socket Events)
 
-Socket.IO event handlers often need to write to the database. Since SQLAlchemy sessions are synchronous and Socket.IO handlers are async, the bridge is `asyncio.to_thread()`:
+Socket.IO event handlers often need to write to the database. They use the **async**
+SQLAlchemy engine and `await` the async model methods directly — there is no
+`asyncio.to_thread()` bridge here:
 
 ```python
 # In get_event_emitter (socket/main.py)
-await asyncio.to_thread(
-    Chats.upsert_message_to_chat_by_id_and_message_id,
+await Chats.upsert_message_to_chat_by_id_and_message_id(
     chat_id, message_id, {"content": content}
 )
 ```
 
-The AnyIO thread limiter (configured via `THREAD_POOL_SIZE`) governs how many of these sync calls can execute concurrently, preventing thread exhaustion.
+DB concurrency is bounded by the async engine's connection pool
+(`DATABASE_POOL_SIZE` / overflow), independently of the AnyIO thread limiter. See
+[ThreadPooling](./threadpooling.md) and [SQLAlchemy](./sqlalchemy.md).
 
 #### 4. Redis + SQLAlchemy (Complementary Persistence)
 
@@ -101,16 +122,19 @@ Redis and SQLAlchemy serve different persistence needs:
 
 When Sentinel is configured, every Redis consumer (Socket.IO manager, `RedisDict`, `RedisLock`, `YdocManager`, rate limiter, task system) transparently benefits from automatic failover via `SentinelRedisProxy`. The proxy intercepts every Redis command and retries on `ConnectionError` or `ReadOnlyError`.
 
-#### 6. ThreadPooling + SQLAlchemy (Safe Async Database Access)
+#### 6. ThreadPooling vs. SQLAlchemy (Two Independent Pools)
 
-The thread pool size directly affects database connection pool utilization:
+These two pools are **independent** — runtime DB access is async and does not consume
+AnyIO thread tokens:
 
 ```
-THREAD_POOL_SIZE  -->  max concurrent sync calls
-DATABASE_POOL_SIZE  -->  max concurrent DB connections
+THREAD_POOL_SIZE    -->  max concurrent BLOCKING non-DB calls (LDAP, audio, reranking)
+DATABASE_POOL_SIZE  -->  max concurrent async DB connections
 ```
 
-If `THREAD_POOL_SIZE > DATABASE_POOL_SIZE`, threads will block waiting for a database connection. The recommended configuration keeps these values aligned.
+The older rule "keep `THREAD_POOL_SIZE >= DATABASE_POOL_SIZE + overflow`" no longer
+applies, since DB calls do not flow through the thread limiter. Tune each pool against
+its own workload. See [ThreadPooling](./threadpooling.md).
 
 ---
 
