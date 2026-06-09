@@ -19,6 +19,7 @@ covers_symbols:
   - { symbol: setupSocket, file: src/routes/+layout.svelte }
   - { symbol: SocketIOCollaborationProvider, file: src/lib/components/common/RichTextInput/Collaboration.ts }
   - { symbol: SimpleAwareness, file: src/lib/components/common/RichTextInput/Collaboration.ts }
+  - { symbol: socketConnected, file: src/lib/stores/index.ts }
   - { symbol: WEBSOCKET_MANAGER, file: backend/open_webui/env.py }
   - { symbol: WEBSOCKET_SERVER_PING_INTERVAL, file: backend/open_webui/env.py }
 verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145

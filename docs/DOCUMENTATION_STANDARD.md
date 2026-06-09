@@ -5,6 +5,8 @@ covers_files:
   - tools/check_doc_staleness.sh
 covers_symbols:
   - { symbol: check_doc_staleness, file: tools/check_doc_staleness.sh }
+  - { symbol: PYFUNC_XFUNCNAME, file: tools/check_doc_staleness.sh }
+  - { symbol: JSFUNC_XFUNCNAME, file: tools/check_doc_staleness.sh }
   - { file: .gitattributes, whole_file: true }
 verified_against_commit: 226c29246a5429bdab6a62aa85ad6f7bd3f9598d
 ---
@@ -59,11 +61,15 @@ symbol* actually moved.
 
 Requirements:
 
-- **`.gitattributes` MUST declare a diff driver per language** so function-name anchors
-  resolve reliably (`*.py diff=python`, `*.ts diff=jsfunc`, …). In this repo the custom
-  `jsfunc` xfuncname (and an extended `python` xfuncname that also recognizes module-level
-  `NAME =` / `NAME:` definitions, so constants and env vars are anchorable) are supplied by
-  `tools/check_doc_staleness.sh` via `git -c diff.<driver>.xfuncname=…`.
+- **The diff driver MUST resolve every anchored symbol class (amended 11.2).**
+  `.gitattributes` MUST map each covered language to a driver whose `xfuncname` recognizes
+  *every* kind of symbol the docs anchor on — not merely the language's default function
+  and class boundaries. A bare `*.py diff=python` is **prohibited** as the normative
+  configuration: the stock Python funcname driver treats only `def`/`class` as boundaries,
+  so for a covered constant `git log -L:SESSION_POOL_TIMEOUT:<file>` exits 128
+  (unresolvable) and the check misreports a **false STALE** — the exact spurious alarm
+  11.2 exists to eliminate. See clauses 11.6 and 11.9 below; this is also where the
+  reproducibility obligation is discharged.
 - **`covers_symbols` entries MUST be `{symbol, file}` pairs.** A bare file (no symbol) is
   permitted *only* when the entire file is the subject, and MUST be marked
   `whole_file: true`. Anyone tempted to omit the symbol should instead ask whether the
@@ -124,6 +130,116 @@ every doc in one session; it is not a health metric and MUST NOT be promoted int
 | Symbol name ambiguous within its file | Defect in the doc — qualify or refactor the anchor. Never fall back to a line range. |
 | Marker not an ancestor of HEAD | Hard **FAIL** (distinct from STALE) — the marker is meaningless until repointed at a reachable commit. |
 | Doc covers a whole file legitimately | `whole_file: true`; the check falls back to `git log <marker>..HEAD -- <file>` for that entry only. |
+
+---
+
+## Amendment to Directive 11
+
+**Status:** prescriptive. Extends Directive 11. The amended bullet in 11.2 above replaces
+the original diff-driver bullet; clauses 11.6–11.9 are new. The first application of the
+directive surfaced two design gaps and one factual error in its own normative text; per
+11.6 those findings are written back into the standard rather than left in the tooling.
+
+### Reproducing resolution by hand (discharges amended 11.2)
+
+The custom `xfuncname` overrides live in Git config, which is not version-controlled, so
+`tools/check_doc_staleness.sh` supplies them at invocation via `git -c`. To reproduce
+symbol resolution manually (so a maintainer running `git log -L` does not hit rc=128 and
+wrongly conclude a doc is broken), prepend the **exact, empirically-validated** overrides
+the tool uses:
+
+```bash
+# Python — def/class PLUS module-level NAME= / NAME: assignments (constants, env vars):
+git -c diff.python.xfuncname='^[[:space:]]*(class|(async[[:space:]]+)?def)[[:space:]]|^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[:=]' \
+    log -L:SESSION_POOL_TIMEOUT:backend/open_webui/socket/main.py
+
+# TypeScript/JS/Svelte (`jsfunc`) — function/class decls + const/let/var bindings,
+# INCLUDING type-annotated declarations (`const socketConnected: Writable<…> = …`):
+git -c diff.jsfunc.xfuncname='^[[:space:]]*((export[[:space:]]+)?(default[[:space:]]+)?(async[[:space:]]+)?(function|class)[[:space:]]+[A-Za-z0-9_]+|(export[[:space:]]+)?(const|let|var)[[:space:]]+[A-Za-z0-9_]+)' \
+    log -L:socketConnected:src/lib/stores/index.ts
+```
+
+These are the forms in `tools/check_doc_staleness.sh` (`PYFUNC_XFUNCNAME`, `JSFUNC_XFUNCNAME`).
+Every config/command/regex shown in any doc MUST be a form validated to resolve the very
+anchors the standard relies on — never the naive `*.py diff=python`, which cannot.
+
+### 11.6 — Empirical findings about resolution MUST be propagated to the normative text
+
+When testing or dog-fooding reveals that anchors resolve only under conditions the prose
+does not state — a required driver extension, an invocation override, a naming constraint,
+an environment dependency — that finding MUST be written into the normative prose, not
+merely encoded in the tooling.
+
+The reasoning is recursive: a marker vouches for prose↔code correspondence. If the prose
+under-specifies what makes the anchors resolve, the marker asserts a correspondence that
+does not hold for any reader who follows the prose alone — drift between the standard's
+words and its behavior, the same failure mode the standard detects one level down.
+
+Consequently:
+
+- A resolution-affecting finding is not "done" when the script is fixed; it is done when
+  the prose, the example, and the script agree.
+- A 11.3 affirmation MUST NOT be issued for a doc while a known, resolution-affecting
+  finding remains unpropagated to that doc's prose. Affirming prose "accurate" while
+  knowing it under-specifies the tooling is a false affirmation — prohibited.
+- The standard's own normative examples are held to the highest bar: every config,
+  command, and regex shown MUST be copy-pasteable without silent prerequisites.
+
+### 11.7 — Mutating `covers_symbols` is a reconciliation act
+
+Editing `covers_symbols` — adding, swapping, or removing an anchor — is governed by 11.3,
+not bookkeeping that leaves the marker untouched by default.
+
+**Adding or swapping in an anchor.** Confirming that the anchor resolves (syntactic) and
+is unchanged since the marker (what the check proves) is necessary but not sufficient. You
+MUST additionally establish the semantic correspondence the marker will vouch for: read
+the doc's prose and confirm it accurately describes that symbol's behavior or contract. A
+freshly named anchor has never had this correspondence established at any marker; only a
+read can establish it.
+
+**Recording.** The commit that mutates `covers_symbols` MUST record, in its message, which
+anchors were added/swapped/removed, and an affirmation that the prose↔symbol correspondence
+was established for each added or swapped-in anchor.
+
+**Marker handling.** The marker MUST advance to the mutating commit *unless both* hold, in
+which case it MAY remain: (a) every added/swapped-in anchor is byte-identical between the
+doc's current marker and the mutating commit, and (b) every retained anchor is likewise
+unchanged across that span (the check proves this). When both hold the recorded affirmation
+is still mandatory; "no code changed" justifies leaving the marker in place but does not
+excuse skipping the correspondence check or its record.
+
+**Removing an anchor.** Per Directive 3, first confirm from the repo root whether the symbol
+still exists (merely no longer doc-relevant) versus was renamed/moved/deleted. A removal
+that is a rename in disguise deletes the very signal the check would have raised.
+
+### 11.8 — Prefer a qualified unambiguous anchor over abandonment
+
+When a candidate anchor name collides — by substring or duplication — so that
+`git log -L:name:file` is ambiguous, you MUST first attempt a qualified or more-specific
+anchor that resolves unambiguously (a longer name, a class-qualified member, a distinct
+nearby definition) before downgrading the entry to informational-only `covers_files`.
+
+Downgrading to `covers_files` (which the check does not verify) is permitted ONLY when no
+unambiguous anchor exists for the concept; it silently removes the symbol from staleness
+detection, trading a false alarm for a blind spot. Before any downgrade you MUST confirm
+the name genuinely collides against the actual tree: a name that merely *looks*
+collision-prone but does not actually collide (e.g. `socketConnected`, which is unique even
+though `socket` is a substring of it) MUST be anchored, not abandoned. Record why a
+downgrade was unavoidable so the coverage loss is deliberate and visible.
+
+### 11.9 — The standard applies to itself; "verbatim" is not a defense
+
+The standard document and its tooling are themselves anchored docs subject to every clause
+herein, including amended 11.2, 11.6, and 11.7. There is no privileged exemption for the
+document that defines the rules.
+
+Adopting the directive by saving its text "verbatim" satisfies nothing if the verbatim text
+under-specifies the tooling that was actually built. The committed prose MUST match the
+committed tooling's real requirements (11.6); the standard's anchor block, affirmations,
+and examples are held to the literal-reproducibility bar without exception. A maintainer who
+follows only the standard's prose MUST arrive at a working configuration — if they cannot,
+the standard is stale against its own implementation and MUST be corrected before any of its
+self-affirmations stand.
 
 ---
 

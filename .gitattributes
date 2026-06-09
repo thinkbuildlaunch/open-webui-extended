@@ -1,8 +1,13 @@
-# Python — `diff=python` gives function/class funcname anchors so
-# `git log -L:<symbol>:<file>` resolves (Directive 11.2).
+# Python — the stock `diff=python` driver recognizes ONLY def/class lines, so
+# module-level constants and env vars (e.g. SESSION_POOL_TIMEOUT) exit 128 under
+# `git log -L` (a false STALE). Per amended Directive 11.2, tools/check_doc_staleness.sh
+# supplies an EXTENDED `diff.python.xfuncname` (def/class PLUS top-level NAME=/NAME:
+# assignments) via `git -c`; the exact override is documented in
+# docs/DOCUMENTATION_STANDARD.md so manual `git log -L` reproduces resolution.
 *.py text eol=lf diff=python
 
-# TypeScript — `diff=jsfunc` is a custom driver; its xfuncname regex is
+# TypeScript — `diff=jsfunc` is a custom driver; its xfuncname (function/class
+# decls + const/let/var bindings, incl. type-annotated `const x: T = …`) is
 # supplied by tools/check_doc_staleness.sh via `git -c diff.jsfunc.xfuncname=...`.
 *.ts text eol=lf diff=jsfunc
 *.tsx text eol=lf diff=jsfunc

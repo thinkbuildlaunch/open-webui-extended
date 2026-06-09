@@ -24,8 +24,11 @@
 set -euo pipefail
 
 # xfuncname for the `jsfunc` driver (.gitattributes maps *.ts/.js/.svelte to it):
-# matches function/class declarations and const/let/var arrow-function bindings.
-JSFUNC_XFUNCNAME='^[[:space:]]*((export[[:space:]]+)?(default[[:space:]]+)?(async[[:space:]]+)?(function|class)[[:space:]]+[A-Za-z0-9_]+|(export[[:space:]]+)?(const|let|var)[[:space:]]+[A-Za-z0-9_]+[[:space:]]*=)'
+# matches function/class declarations and const/let/var bindings. The binding
+# branch deliberately does NOT require a trailing `=`, so TypeScript
+# declarations carrying a type annotation (`const socketConnected: Writable<…> =`)
+# resolve as funcname lines too — without this, annotated exports exit 128.
+JSFUNC_XFUNCNAME='^[[:space:]]*((export[[:space:]]+)?(default[[:space:]]+)?(async[[:space:]]+)?(function|class)[[:space:]]+[A-Za-z0-9_]+|(export[[:space:]]+)?(const|let|var)[[:space:]]+[A-Za-z0-9_]+)'
 
 # Override the built-in `python` driver's xfuncname so that, in addition to
 # `def`/`class`, a MODULE-LEVEL (column-0) `NAME =` or `NAME: type` assignment is
