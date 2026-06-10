@@ -129,6 +129,7 @@ every doc in one session; it is not a health metric and MUST NOT be promoted int
 | Covered symbol moved to another file | STALE → update the `file` field in `covers_symbols`, then advance per 11.3. |
 | Symbol name ambiguous within its file | Defect in the doc — qualify or refactor the anchor. Never fall back to a line range. |
 | Marker not an ancestor of HEAD | Hard **FAIL** (distinct from STALE) — the marker is meaningless until repointed at a reachable commit. |
+| Marker == HEAD (empty `<marker>..HEAD` range) | **Pass** — no commit lies in the range, so no covered symbol can have changed. The check skips the per-symbol `git log -L` (which exits 128 on an empty range and would otherwise misreport "not resolvable"). |
 | Doc covers a whole file legitimately | `whole_file: true`; the check falls back to `git log <marker>..HEAD -- <file>` for that entry only. |
 
 ---

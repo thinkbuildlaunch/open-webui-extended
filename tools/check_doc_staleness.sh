@@ -67,6 +67,14 @@ check_doc_staleness() {
       fail=1; continue
     fi
 
+    # Empty range (marker == HEAD, e.g. a doc just re-verified to the tip):
+    # no commit lies in <marker>..HEAD, so by definition no covered symbol can
+    # have changed -> trivially current. Skip; `git log -L` over an empty range
+    # exits 128 and would otherwise be misreported as "not resolvable".
+    if [ -z "$(git rev-list "${sha}..HEAD" 2>/dev/null)" ]; then
+      continue
+    fi
+
     # Iterate covered symbols. Fields are joined with ASCII Unit Separator
     # (0x1F), NOT tab: tab is an IFS-whitespace char, so `read` would trim a
     # leading empty `symbol` field (whole_file entries have none) and shift the

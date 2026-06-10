@@ -1,277 +1,204 @@
+---
+# Machine-readable anchor block — see Directive 8 / Directive 11.
+covers_files:
+  - backend/open_webui/utils/redis.py
+  - backend/open_webui/env.py
+  - backend/open_webui/socket/main.py
+covers_symbols:
+  - { symbol: SentinelRedisProxy, file: backend/open_webui/utils/redis.py }
+  - { symbol: _resolve_master, file: backend/open_webui/utils/redis.py }
+  - { symbol: _should_retry, file: backend/open_webui/utils/redis.py }
+  - { symbol: _FACTORY_METHODS, file: backend/open_webui/utils/redis.py }
+  - { symbol: get_redis_connection, file: backend/open_webui/utils/redis.py }
+  - { symbol: _build_sentinel, file: backend/open_webui/utils/redis.py }
+  - { symbol: build_sentinel_url, file: backend/open_webui/utils/redis.py }
+  - { symbol: get_sentinels_from_env, file: backend/open_webui/utils/redis.py }
+  - { symbol: REDIS_SENTINEL_MAX_RETRY_COUNT, file: backend/open_webui/env.py }
+  - { symbol: REDIS_SENTINEL_HOSTS, file: backend/open_webui/env.py }
+verified_against_commit: 1d341b84029243b73fd086c384ba5b1513ab4e56
+---
+
 # Redis Sentinels
 
-Redis Sentinel provides automatic failover and high availability for Redis in Open WebUI Extended. When configured, the application transparently handles master election, connection retries, and failover recovery without any downtime visible to users.
+Redis Sentinel provides automatic failover and high availability for Redis in Open WebUI
+Extended. When configured, the application transparently handles master re-resolution and
+connection retries on failover, without callers having to know a failover occurred.
 
 ---
 
 ## Relevant Files
 
-| File | Purpose |
+| File | Subject (grep for these symbols) |
 |---|---|
-| `backend/open_webui/utils/redis.py` | `SentinelRedisProxy` class, `parse_redis_service_url()`, `get_sentinels_from_env()`, `get_sentinel_url_from_env()` |
-| `backend/open_webui/env.py` (lines 444-473) | Sentinel environment variables |
-| `backend/open_webui/socket/main.py` (lines 63-70, 109-120) | Sentinel URL construction for Socket.IO manager |
-| `backend/open_webui/main.py` (lines 630-637) | Application-level Redis+Sentinel initialization |
-| `backend/open_webui/test/util/test_redis.py` | Comprehensive test suite for `SentinelRedisProxy` |
+| `backend/open_webui/utils/redis.py` | `SentinelRedisProxy`, `_resolve_master`, `_should_retry`, `_FACTORY_METHODS`, `get_redis_connection`, `_build_sentinel`, `build_sentinel_url`, `parse_redis_url` (aliased `parse_redis_service_url`), `get_sentinels_from_env` |
+| `backend/open_webui/env.py` | `REDIS_SENTINEL_HOSTS`, `REDIS_SENTINEL_PORT`, `REDIS_SENTINEL_MAX_RETRY_COUNT`, `REDIS_RECONNECT_DELAY`, `REDIS_SOCKET_CONNECT_TIMEOUT`, `WEBSOCKET_SENTINEL_HOSTS`, `WEBSOCKET_SENTINEL_PORT` |
+| `backend/open_webui/socket/main.py` | Socket.IO manager URL via `build_sentinel_url` (module-level, no function anchor — informational) |
+
+> **No Sentinel test module exists at time of writing.** There is no
+> `backend/open_webui/test/` directory and no `test_*redis*` file anywhere in the tree
+> (`find . -name 'test_*redis*'` is empty). A prior version of this doc described a
+> `backend/open_webui/test/util/test_redis.py` "comprehensive test suite" — it does not
+> exist. Per Directive 3, confirm with the root-level `find` before re-adding any such
+> reference.
 
 ---
 
 ## How Sentinel Works in This Codebase
-
-### Architecture Overview
 
 ```
                    Redis Sentinel Cluster
               +--------+  +--------+  +--------+
               | Sent-1 |  | Sent-2 |  | Sent-3 |
               +--------+  +--------+  +--------+
-                   |            |            |
-                   +-----+------+-----+------+
-                         |            |
-                    +--------+   +--------+
-                    | Master |   | Replica|
-                    +--------+   +--------+
-                         ^
-                         |
-              SentinelRedisProxy
-              (auto-failover retry)
-                         ^
-                         |
-         +---------------+---------------+
-         |               |               |
-   SESSION_POOL    Task Pub/Sub    Rate Limiter
-   (RedisDict)     (tasks.py)     (rate_limit.py)
+                   \           |           /
+                    +----------+----------+
+                          |          |
+                     +--------+  +---------+
+                     | Master |  | Replica |
+                     +--------+  +---------+
+                          ^
+                          |  SentinelRedisProxy (re-resolves master + retries)
+                          |
+          +---------------+----------------+
+          |               |                |
+    SESSION_POOL     Task Pub/Sub     Rate Limiter
+    (RedisDict)      (tasks.py)       (rate_limit.py)
 ```
 
-### Connection Establishment
+**Connection establishment** — `get_redis_connection()` takes the Sentinel path whenever
+its `redis_sentinels` argument is non-empty (it has precedence over cluster/standalone).
+The steps, all in `utils/redis.py`:
 
-When `REDIS_SENTINEL_HOSTS` is set, `get_redis_connection()` takes the Sentinel path:
+1. `get_sentinels_from_env(hosts_csv, port)` turns `"sentinel1,sentinel2,sentinel3"` +
+   port into `[("sentinel1", 26379), …]`.
+2. `_build_sentinel(...)` parses the Redis URL with `parse_redis_url()` (alias
+   `parse_redis_service_url`) to get `service` / `port` / `db` / `username` / `password`,
+   constructs a `redis(.asyncio).sentinel.Sentinel(...)` (async vs sync chosen by
+   `async_mode`), and wraps it: `SentinelRedisProxy(sentinel, cfg["service"], async_mode=…)`.
 
-1. **Parse the Redis URL** via `parse_redis_service_url()` to extract:
-   - `username` and `password` (for Sentinel authentication)
-   - `service` name (hostname portion of URL, default: `mymaster`)
-   - `port` and `db` number
-
-2. **Parse Sentinel hosts** via `get_sentinels_from_env()`:
-   ```python
-   # Input: REDIS_SENTINEL_HOSTS="sentinel1,sentinel2,sentinel3"
-   #        REDIS_SENTINEL_PORT="26379"
-   # Output: [("sentinel1", 26379), ("sentinel2", 26379), ("sentinel3", 26379)]
-   ```
-
-3. **Create a Sentinel instance** (async or sync depending on mode):
-   ```python
-   sentinel = redis.asyncio.sentinel.Sentinel(
-       [("sentinel1", 26379), ("sentinel2", 26379), ("sentinel3", 26379)],
-       port=6379,
-       db=0,
-       username="user",
-       password="pass",
-       decode_responses=True,
-       socket_connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT,
-   )
-   ```
-
-4. **Wrap in `SentinelRedisProxy`**:
-   ```python
-   connection = SentinelRedisProxy(sentinel, "mymaster", async_mode=True)
-   ```
+> **Contract, not a copy.** `_build_sentinel` passes `socket_connect_timeout` and the
+> other configured socket options through to the `Sentinel`, and the service name comes
+> from the **hostname** of `REDIS_URL` (default `mymaster`) — not a separate setting.
 
 ---
 
 ## `SentinelRedisProxy` (`utils/redis.py`)
 
-The proxy is the core mechanism for transparent failover. It wraps a Sentinel instance and intercepts all attribute access (Redis commands) to add retry logic.
+The proxy is the transparent-failover mechanism. It wraps a `Sentinel` and intercepts
+attribute access (Redis commands) through `__getattr__` to add retry logic.
 
-### Class Structure
+**Construction** (the real signature — grep it): `__init__(self, sentinel, service_name, *, async_mode=True)`.
+It stores `_sentinel`, `_service_name`, and `_async_mode`. There is **no** `**kw` / `_kw`
+and **no** `_master()` method; master resolution is `_resolve_master()`, which returns
+`self._sentinel.master_for(self._service_name)` with no extra kwargs.
 
-```python
-class SentinelRedisProxy:
-    def __init__(self, sentinel, service, *, async_mode=True, **kw):
-        self._sentinel = sentinel
-        self._service = service
-        self._kw = kw
-        self._async_mode = async_mode
+**`__getattr__` flow** for `proxy.<name>(...)`:
 
-    def _master(self):
-        return self._sentinel.master_for(self._service, **self._kw)
-```
+1. Resolve the current master (`self._sentinel.master_for(self._service_name)`) and read
+   `original = getattr(master, name)`.
+2. If `original` is not callable, or `name` is in `_FACTORY_METHODS`
+   (`{pipeline, pubsub, monitor, client, transaction}` at time of writing), return it
+   **unwrapped** — factory/handle objects are passed straight through.
+3. Otherwise return a retry wrapper: `_wrap_sync(name)` in sync mode, else `_wrap_async(name, original)`.
 
-### How `__getattr__` Works
+**Retry logic** (sync and async share the shape):
 
-When any Redis command is called on the proxy (e.g., `proxy.get("key")`):
+- The loop runs `for attempt in range(REDIS_SENTINEL_MAX_RETRY_COUNT)`.
+- Only `_SENTINEL_RETRYABLE = (redis.exceptions.ConnectionError, redis.exceptions.ReadOnlyError)`
+  is caught — `ConnectionError` (master unreachable) and `ReadOnlyError` (the old master was
+  demoted to a replica).
+- `_should_retry(attempt)` is `attempt < REDIS_SENTINEL_MAX_RETRY_COUNT - 1`. While it holds:
+  `_log_retry()` emits a debug line, the proxy sleeps `REDIS_RECONNECT_DELAY / 1000` seconds
+  **only if** `REDIS_RECONNECT_DELAY` is set, and the loop re-runs — each iteration
+  re-resolves the master, so Sentinel returns the freshly-promoted one.
+- When retries are exhausted, `_log_exhausted()` runs and the exception is re-raised.
 
-1. **Resolve the current master** via `self._master()` which calls `sentinel.master_for(service_name)`
-2. **Get the actual method** from the master connection
-3. **Check if it's a factory method** (`pipeline`, `pubsub`, `monitor`, `client`, `transaction`) - these are returned directly without wrapping
-4. **Wrap the call** with retry logic based on the mode (async or sync)
+> **Exact log wording (Directive 5 — don't paraphrase from memory).** `_log_retry` formats
+> `'Sentinel failover (%s) — retry %d/%d'` with the exception class name, `attempt + 1`, and
+> `REDIS_SENTINEL_MAX_RETRY_COUNT` — e.g. `Sentinel failover (ConnectionError) — retry 1/2`.
+> It is **not** `"Redis sentinel fail-over (…). Retry 1/2"`.
 
-### Retry Logic
-
-The proxy retries on two specific exception types:
-
-- **`redis.exceptions.ConnectionError`**: The master is unreachable (network issue, master down)
-- **`redis.exceptions.ReadOnlyError`**: Connected to what was the master, but it's been demoted to a replica
-
-For each retry:
-1. Log a debug message: `"Redis sentinel fail-over (ConnectionError). Retry 1/2"`
-2. Wait `REDIS_RECONNECT_DELAY` milliseconds (if configured)
-3. Re-resolve the master via `self._master()` (Sentinel will return the new master)
-4. Retry the command
-
-If all retries are exhausted, log an error and re-raise the exception.
-
-### Async Mode
-
-In async mode, the proxy handles three types of callables:
-
-1. **Async generator functions** (e.g., `scan_iter`): Returns a wrapped async generator that retries on failover
-2. **Regular async methods** (e.g., `get`, `set`): Returns an async wrapper that awaits the result and retries
-3. **Sync methods** called from async context: Detects via `inspect.iscoroutine()` and awaits if needed
-
-```python
-# Async retry wrapper (simplified)
-async def _wrapped(*args, **kwargs):
-    for i in range(REDIS_SENTINEL_MAX_RETRY_COUNT):
-        try:
-            method = getattr(self._master(), item)
-            result = method(*args, **kwargs)
-            if inspect.iscoroutine(result):
-                return await result
-            return result
-        except (ConnectionError, ReadOnlyError) as e:
-            if i < max_retries - 1:
-                await asyncio.sleep(REDIS_RECONNECT_DELAY / 1000)
-                continue
-            raise
-```
-
-### Sync Mode
-
-In sync mode, the wrapper is simpler:
-
-```python
-def _wrapped(*args, **kwargs):
-    for i in range(REDIS_SENTINEL_MAX_RETRY_COUNT):
-        try:
-            method = getattr(self._master(), item)
-            return method(*args, **kwargs)
-        except (ConnectionError, ReadOnlyError) as e:
-            if i < max_retries - 1:
-                time.sleep(REDIS_RECONNECT_DELAY / 1000)
-                continue
-            raise
-```
-
----
-
-## Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `REDIS_SENTINEL_HOSTS` | `""` | Comma-separated list of sentinel hostnames. When set, enables Sentinel mode. Example: `sentinel1,sentinel2,sentinel3` |
-| `REDIS_SENTINEL_PORT` | `26379` | Port used by all sentinel instances (same port for all) |
-| `REDIS_SENTINEL_MAX_RETRY_COUNT` | `2` | Number of retry attempts per Redis operation during failover. Minimum value: 1. |
-| `REDIS_RECONNECT_DELAY` | `None` | Delay between retries in **milliseconds**. When `None`, retries happen immediately. Example: `500` for 500ms delay |
-| `REDIS_SOCKET_CONNECT_TIMEOUT` | `None` | TCP connection timeout in **seconds** (float). Applied to Sentinel connections. Example: `5.0` |
-| `REDIS_URL` | `""` | Used to extract service name, credentials, port, and DB number for Sentinel. The hostname becomes the service name (default: `mymaster`) |
-
-### WebSocket-Specific Sentinel Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `WEBSOCKET_SENTINEL_HOSTS` | `""` | Separate sentinel hosts for the WebSocket Redis (allows different Redis cluster) |
-| `WEBSOCKET_SENTINEL_PORT` | `26379` | Sentinel port for WebSocket Redis |
+**Async vs sync wrappers.** In async mode, `_wrap_async` dispatches by callable kind:
+`_wrap_async_gen` for async-generator methods (e.g. `scan_iter`) and `_wrap_async_call`
+for regular coroutine methods; `_wrap_async_call` `await`s the result when
+`inspect.iscoroutine(result)` is true and returns it otherwise. Sync mode uses `_wrap_sync`,
+which calls the method and returns directly. Both use the same retry/backoff loop above.
 
 ---
 
 ## URL Construction for Socket.IO
 
-Socket.IO's `AsyncRedisManager` requires a `redis+sentinel://` URL format. The `get_sentinel_url_from_env()` function constructs this:
+Socket.IO's `AsyncRedisManager` needs a `redis+sentinel://` URL, built by **`build_sentinel_url(base_url, hosts_csv, port)`** (there is no `get_sentinel_url_from_env`).
+It returns `f"redis+sentinel://{auth}{nodes}/{db}/{service}"`, e.g.
+`redis+sentinel://user:pass@sentinel1:26379,sentinel2:26379/0/mymaster`.
+
+In `socket/main.py` (module-level, under `if WEBSOCKET_MANAGER == "redis"`):
 
 ```python
-def get_sentinel_url_from_env(redis_url, sentinel_hosts_env, sentinel_port_env):
-    redis_config = parse_redis_service_url(redis_url)
-    # ...
-    return f"redis+sentinel://{auth_part}{hosts_part}/{db}/{service}"
-    # Example: "redis+sentinel://user:pass@sentinel1:26379,sentinel2:26379/0/mymaster"
+ws_redis_url = (
+    build_sentinel_url(WEBSOCKET_REDIS_URL, sentinel_hosts, WEBSOCKET_SENTINEL_PORT)
+    if sentinel_hosts else WEBSOCKET_REDIS_URL
+)
+redis_manager = socketio.AsyncRedisManager(ws_redis_url, redis_options=WEBSOCKET_REDIS_OPTIONS)
 ```
 
-This is used in `socket/main.py`:
-
-```python
-if WEBSOCKET_SENTINEL_HOSTS:
-    mgr = socketio.AsyncRedisManager(
-        get_sentinel_url_from_env(
-            WEBSOCKET_REDIS_URL, WEBSOCKET_SENTINEL_HOSTS, WEBSOCKET_SENTINEL_PORT
-        ),
-        redis_options=WEBSOCKET_REDIS_OPTIONS,
-    )
-```
+(Illustrative — the variable is `redis_manager`/`ws_redis_url`; grep `build_sentinel_url`
+in `socket/main.py`.)
 
 ---
 
-## `parse_redis_service_url()` (`utils/redis.py`)
+## `parse_redis_url()` / `parse_redis_service_url()` (`utils/redis.py`)
 
-Parses a standard Redis URL to extract Sentinel-relevant parameters:
+`parse_redis_service_url` is a module-level alias of `parse_redis_url`. It extracts the
+Sentinel-relevant parameters from a Redis URL:
 
-```python
-def parse_redis_service_url(redis_url):
-    # Input: "redis://user:pass@mymaster:6379/2"
-    # Output: {
-    #     "username": "user",
-    #     "password": "pass",
-    #     "service": "mymaster",    # hostname becomes service name
-    #     "port": 6379,
-    #     "db": 2,
-    # }
-```
+- Input `redis://user:pass@mymaster:6379/2` → `{service: "mymaster", port: 6379, db: 2, username: "user", password: "pass"}`.
+- The **hostname** becomes the Sentinel `service` name (default `mymaster`).
+- Accepts `redis://` and `rediss://` (TLS); rejects other schemes with `ValueError`.
+- `port` defaults to `6379`, `db` to `0`.
 
-Key details:
-- Supports both `redis://` and `rediss://` (TLS) schemes
-- Hostname becomes the Sentinel **service name** (default: `mymaster`)
-- Port defaults to `6379` if not specified
-- DB defaults to `0` if not specified in the path
+---
+
+## Environment Variables
+
+Defaults are the fallbacks in `env.py` **at time of writing**; the symbols are the source
+of truth.
+
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_SENTINEL_HOSTS` | `""` | Comma-separated sentinel hostnames; when set, enables Sentinel mode (e.g. `sentinel1,sentinel2,sentinel3`) |
+| `REDIS_SENTINEL_PORT` | `26379` | Port shared by all sentinel instances |
+| `REDIS_SENTINEL_MAX_RETRY_COUNT` | `2` | Total attempts per command during failover; a value `< 1` is **reset to `2`** (not clamped to 1) |
+| `REDIS_RECONNECT_DELAY` | `None` | Delay between retries in **milliseconds** (slept as `value / 1000` s); `None` ⇒ retry immediately |
+| `REDIS_SOCKET_CONNECT_TIMEOUT` | `None` | TCP connect timeout (seconds, float), applied to the Sentinel |
+| `REDIS_URL` | `""` | Source of the Sentinel `service` name, credentials, port, and db (hostname ⇒ service, default `mymaster`) |
+
+### WebSocket-specific Sentinel variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEBSOCKET_SENTINEL_HOSTS` | `""` | Separate sentinel hosts for the WebSocket Redis |
+| `WEBSOCKET_SENTINEL_PORT` | `26379` | Sentinel port for the WebSocket Redis |
 
 ---
 
 ## Configuration Examples
 
-### Minimal Sentinel Setup
-
 ```env
+# Minimal
 REDIS_URL=redis://mymaster:6379/0
 REDIS_SENTINEL_HOSTS=sentinel1,sentinel2,sentinel3
 REDIS_SENTINEL_PORT=26379
-```
 
-### Sentinel with Authentication
-
-```env
+# With auth: put credentials in REDIS_URL
 REDIS_URL=redis://username:password@mymaster:6379/0
-REDIS_SENTINEL_HOSTS=sentinel1,sentinel2,sentinel3
-REDIS_SENTINEL_PORT=26379
-```
 
-### Sentinel with Tuned Failover
-
-```env
-REDIS_URL=redis://mymaster:6379/0
-REDIS_SENTINEL_HOSTS=sentinel1,sentinel2,sentinel3
-REDIS_SENTINEL_PORT=26379
+# Tuned failover
 REDIS_SENTINEL_MAX_RETRY_COUNT=5
-REDIS_RECONNECT_DELAY=500
-REDIS_SOCKET_CONNECT_TIMEOUT=5.0
-```
+REDIS_RECONNECT_DELAY=500          # ms
+REDIS_SOCKET_CONNECT_TIMEOUT=5.0   # seconds
 
-### Separate Sentinel for WebSocket Layer
-
-```env
-# Main Redis (for tasks, auth, config)
-REDIS_URL=redis://mymaster:6379/0
-REDIS_SENTINEL_HOSTS=sentinel1,sentinel2,sentinel3
-
-# WebSocket Redis (for Socket.IO, sessions, usage)
+# Separate Sentinel for the WebSocket layer
 WEBSOCKET_MANAGER=redis
 WEBSOCKET_REDIS_URL=redis://ws-master:6379/0
 WEBSOCKET_SENTINEL_HOSTS=ws-sentinel1,ws-sentinel2,ws-sentinel3
@@ -282,29 +209,48 @@ WEBSOCKET_SENTINEL_PORT=26379
 
 ## Failover Sequence
 
-When a Redis master goes down:
-
-1. **Sentinel detects failure** (configurable timeout on the Sentinel side)
-2. **Sentinel promotes a replica** to master
-3. **Application sends a Redis command** (e.g., `SESSION_POOL["sid"]`)
-4. **`SentinelRedisProxy` catches** `ConnectionError` or `ReadOnlyError`
-5. **Proxy logs**: `"Redis sentinel fail-over (ConnectionError). Retry 1/2"`
-6. **Proxy waits** `REDIS_RECONNECT_DELAY` ms (if configured)
-7. **Proxy calls** `self._master()` which queries Sentinel for the new master
-8. **Proxy retries** the command on the new master
-9. **If still failing**, repeats up to `REDIS_SENTINEL_MAX_RETRY_COUNT` times
-10. **If all retries exhausted**, raises the exception to the caller
+1. The Redis master goes down; Sentinel (server-side) promotes a replica.
+2. The application issues a Redis command through `SentinelRedisProxy`.
+3. The wrapper catches `ConnectionError` or `ReadOnlyError`.
+4. `_log_retry()` logs `Sentinel failover (<ExceptionName>) — retry n/N`.
+5. If `REDIS_RECONNECT_DELAY` is set, it sleeps `REDIS_RECONNECT_DELAY / 1000` s.
+6. The loop re-runs: `_resolve_master()` asks Sentinel for the new master, and the command
+   is retried against it.
+7. This repeats while `_should_retry(attempt)` holds (up to `REDIS_SENTINEL_MAX_RETRY_COUNT`
+   total attempts); if still failing, the exception is re-raised to the caller.
 
 ---
 
-## Testing
+## Verification Recipe
 
-The test suite at `backend/open_webui/test/util/test_redis.py` covers:
+Run from the repo root. If any line's expectation is violated, the doc is stale and must
+be re-audited. Symbol resolution for the manual `git log -L` checks uses the overrides in
+`docs/DOCUMENTATION_STANDARD.md`.
 
-- `SentinelRedisProxy` creation for both sync and async modes
-- Failover retry on `ConnectionError` (verifies retry count and master re-resolution)
-- Failover retry on `ReadOnlyError` (same flow)
-- Factory method pass-through (`pipeline`, `pubsub`, `monitor`, `client`, `transaction`)
-- String, hash, list, and pub/sub command delegation
-- Async generator support (e.g., `scan_iter`)
-- Retry exhaustion (exception propagation after max retries)
+```bash
+# Proxy + real method/field names (NOT _master / **kw / get_sentinel_url_from_env)
+grep -rn "class SentinelRedisProxy\|def _resolve_master\|def _should_retry\|_FACTORY_METHODS = " backend/open_webui/utils/redis.py
+grep -rn "service_name" backend/open_webui/utils/redis.py
+grep -rn "def _master\|self._kw\|get_sentinel_url_from_env" backend/open_webui/utils/redis.py || echo "absent (expected)"
+
+# Exact retry log wording
+grep -rn "Sentinel failover (%s) — retry %d/%d" backend/open_webui/utils/redis.py
+
+# Retryable exceptions + factory passthrough set
+grep -rn "_SENTINEL_RETRYABLE\|ConnectionError\|ReadOnlyError" backend/open_webui/utils/redis.py
+grep -rn "pipeline.*pubsub.*monitor.*client.*transaction" backend/open_webui/utils/redis.py
+
+# URL builder is build_sentinel_url, used by the Socket.IO manager
+grep -rn "def build_sentinel_url\|redis+sentinel://" backend/open_webui/utils/redis.py
+grep -rn "build_sentinel_url\|AsyncRedisManager" backend/open_webui/socket/main.py
+
+# parse helper + its alias
+grep -rn "def parse_redis_url\|parse_redis_service_url = parse_redis_url" backend/open_webui/utils/redis.py
+
+# Env var: <1 resets to 2 (not min 1)
+grep -rn "REDIS_SENTINEL_MAX_RETRY_COUNT" backend/open_webui/env.py
+
+# Sentinel test module does NOT exist (Directive 3 — prove absence from root)
+find . -name 'test_*redis*' -not -path './node_modules/*'   # expected: no output
+ls backend/open_webui/test 2>/dev/null || echo "no backend/open_webui/test dir (expected)"
+```
