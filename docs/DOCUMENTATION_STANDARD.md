@@ -8,7 +8,7 @@ covers_symbols:
   - { symbol: PYFUNC_XFUNCNAME, file: tools/check_doc_staleness.sh }
   - { symbol: JSFUNC_XFUNCNAME, file: tools/check_doc_staleness.sh }
   - { file: .gitattributes, whole_file: true }
-verified_against_commit: 1bfb95f979073399991004f483602b28387c04e5
+verified_against_commit: 375773fe4609235358e458237fa1d19fd7b4fee2
 ---
 
 # Documentation Standard
