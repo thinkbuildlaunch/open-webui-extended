@@ -1,0 +1,29 @@
+name: Docs Staleness
+
+# Enforces Directive 11 (docs/DOCUMENTATION_STANDARD.md): every doc with a
+# verified_against_commit marker must have an unchanged set of covered symbols
+# since that commit, and the marker must be a full 40-hex ancestor of HEAD.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is required: the check uses `git log -L` over
+          # <marker>..HEAD and `git merge-base --is-ancestor`.
+          fetch-depth: 0
+
+      - name: Install yq (jq-based) and jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          pip install yq
+
+      - name: Check documentation staleness
+        run: tools/check_doc_staleness.sh

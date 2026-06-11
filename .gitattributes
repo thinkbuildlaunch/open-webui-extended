@@ -1,15 +1,25 @@
-# TypeScript
-*.ts text eol=lf
-*.tsx text eol=lf
+# Python — the stock `diff=python` driver recognizes ONLY def/class lines, so
+# module-level constants and env vars (e.g. SESSION_POOL_TIMEOUT) exit 128 under
+# `git log -L` (a false STALE). Per amended Directive 11.2, tools/check_doc_staleness.sh
+# supplies an EXTENDED `diff.python.xfuncname` (def/class PLUS top-level NAME=/NAME:
+# assignments) via `git -c`; the exact override is documented in
+# docs/DOCUMENTATION_STANDARD.md so manual `git log -L` reproduces resolution.
+*.py text eol=lf diff=python
+
+# TypeScript — `diff=jsfunc` is a custom driver; its xfuncname (function/class
+# decls + const/let/var bindings, incl. type-annotated `const x: T = …`) is
+# supplied by tools/check_doc_staleness.sh via `git -c diff.jsfunc.xfuncname=...`.
+*.ts text eol=lf diff=jsfunc
+*.tsx text eol=lf diff=jsfunc
 
 # JavaScript
-*.js text eol=lf
-*.jsx text eol=lf
-*.mjs text eol=lf
-*.cjs text eol=lf
+*.js text eol=lf diff=jsfunc
+*.jsx text eol=lf diff=jsfunc
+*.mjs text eol=lf diff=jsfunc
+*.cjs text eol=lf diff=jsfunc
 
 # Svelte
-*.svelte text eol=lf
+*.svelte text eol=lf diff=jsfunc
 
 # HTML/CSS
 *.html text eol=lf

@@ -1,384 +1,319 @@
+---
+# Machine-readable anchor block — see Directive 8.
+covers_files:
+  - backend/open_webui/socket/main.py
+  - backend/open_webui/socket/utils.py
+  - backend/open_webui/main.py
+  - backend/open_webui/utils/asgi_middleware.py
+  - backend/open_webui/env.py
+  - src/routes/+layout.svelte
+  - src/lib/stores/index.ts
+  - src/lib/components/common/RichTextInput/Collaboration.ts
+covers_symbols:
+  - { symbol: user_join, file: backend/open_webui/socket/main.py }
+  - { symbol: get_event_emitter, file: backend/open_webui/socket/main.py }
+  - { symbol: get_event_call, file: backend/open_webui/socket/main.py }
+  - { symbol: _make_channel_emitter, file: backend/open_webui/socket/main.py }
+  - { symbol: normalize_document_id, file: backend/open_webui/socket/main.py }
+  - { symbol: WebsocketUpgradeGuardMiddleware, file: backend/open_webui/utils/asgi_middleware.py }
+  - { symbol: setupSocket, file: src/routes/+layout.svelte }
+  - { symbol: SocketIOCollaborationProvider, file: src/lib/components/common/RichTextInput/Collaboration.ts }
+  - { symbol: SimpleAwareness, file: src/lib/components/common/RichTextInput/Collaboration.ts }
+  - { symbol: socketConnected, file: src/lib/stores/index.ts }
+  - { symbol: WEBSOCKET_MANAGER, file: backend/open_webui/env.py }
+  - { symbol: WEBSOCKET_SERVER_PING_INTERVAL, file: backend/open_webui/env.py }
+verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
+---
+
 # WebSockets
 
-Open WebUI Extended uses Socket.IO (built on Engine.IO) for real-time bidirectional communication between the browser and server. This enables live chat streaming, collaborative document editing, channel messaging, model usage tracking, and session management.
+Open WebUI Extended uses Socket.IO (built on Engine.IO) for real-time bidirectional
+communication between browser and server: live chat streaming, collaborative document
+editing, channel messaging, model usage tracking, and session management.
+
+> **Read this first — socket DB writes are async, not thread-pooled.** The event
+> emitter and socket handlers `await` async model methods directly; there are **zero**
+> `asyncio.to_thread()` calls in `socket/main.py` (verify:
+> `grep -c to_thread backend/open_webui/socket/main.py` returns `0`). A previous version
+> of this doc showed the emitter wrapping DB writes in `asyncio.to_thread()` — that is
+> obsolete (see [sqlalchemy.md](./sqlalchemy.md) / [threadpooling.md](./threadpooling.md)).
 
 ---
 
 ## Relevant Files
 
 ### Backend
-| File | Purpose |
+
+| File | Subject (grep for these symbols) |
 |---|---|
-| `backend/open_webui/socket/main.py` | Core Socket.IO server: event handlers, session management, Yjs collaboration, cleanup tasks |
-| `backend/open_webui/socket/utils.py` | `RedisDict`, `RedisLock`, `YdocManager` utility classes |
-| `backend/open_webui/main.py` (line 1524) | Mounts Socket.IO app at `/ws` |
-| `backend/open_webui/main.py` (lines 1497-1512) | WebSocket upgrade validation middleware |
-| `backend/open_webui/main.py` (lines 648-649) | Starts periodic cleanup background tasks |
-| `backend/open_webui/env.py` (lines 726-799) | WebSocket environment variable definitions |
-| `backend/open_webui/tasks.py` | Distributed task management using Redis pub/sub |
+| `backend/open_webui/socket/main.py` | `sio`, `connect`, `disconnect`, `user_join`, `heartbeat`, `usage`, `get_event_emitter`, `get_event_call`, `normalize_document_id`, ydoc handlers, cleanup tasks |
+| `backend/open_webui/socket/utils.py` | `RedisDict`, `RedisLock`, `YdocManager` |
+| `backend/open_webui/main.py` | `app.mount("/ws", socket_app)`; `app.add_middleware(WebsocketUpgradeGuardMiddleware)`; `asyncio.create_task(periodic_*_cleanup())` |
+| `backend/open_webui/utils/asgi_middleware.py` | `WebsocketUpgradeGuardMiddleware` |
+| `backend/open_webui/env.py` | `WEBSOCKET_*` env vars |
+| `backend/open_webui/tasks.py` | distributed task management (Redis pub/sub) — see [redis.md](./redis.md) |
 
 ### Frontend
-| File | Purpose |
+
+| File | Subject |
 |---|---|
-| `src/routes/+layout.svelte` (lines 107-187) | Socket.IO client setup, connection events, heartbeat |
-| `src/lib/stores/index.ts` (line 29) | Global Svelte store for the socket instance |
-| `src/lib/components/common/RichTextInput/Collaboration.ts` | Yjs collaborative editing provider via Socket.IO |
+| `src/routes/+layout.svelte` | `setupSocket`, `io(...)` client config, `connect`/`disconnect` handlers, `heartbeatInterval`, `user-join` emit |
+| `src/lib/stores/index.ts` | `socket` / `socketConnected` Svelte stores |
+| `src/lib/components/common/RichTextInput/Collaboration.ts` | `SocketIOCollaborationProvider`, `SimpleAwareness` |
 
 ---
 
-## Server Setup
+## Server Setup (`socket/main.py`)
 
-### Socket.IO Server Creation (`socket/main.py`)
+### Socket.IO server
 
-The server is created with different configurations depending on whether Redis is enabled:
+A single `sio = socketio.AsyncServer(...)` is created with `async_mode="asgi"`,
+`always_connect=True`, and CORS from `SOCKETIO_CORS_ORIGINS`. Two things vary:
 
-```python
-# With Redis (multi-instance)
-if WEBSOCKET_MANAGER == "redis":
-    mgr = socketio.AsyncRedisManager(WEBSOCKET_REDIS_URL, redis_options=WEBSOCKET_REDIS_OPTIONS)
-    sio = socketio.AsyncServer(
-        cors_allowed_origins=SOCKETIO_CORS_ORIGINS,
-        async_mode="asgi",
-        transports=["websocket"],        # or ["polling"] if ENABLE_WEBSOCKET_SUPPORT=False
-        allow_upgrades=ENABLE_WEBSOCKET_SUPPORT,
-        always_connect=True,
-        client_manager=mgr,              # Redis-backed manager for cross-instance events
-        ping_interval=25,                # Engine.IO ping interval
-        ping_timeout=20,                 # Engine.IO ping timeout
-    )
+- **Transport**: `["websocket"]` when `ENABLE_WEBSOCKET_SUPPORT` is true, else `["polling"]`;
+  `allow_upgrades` tracks the same flag.
+- **Cross-instance manager**: when `WEBSOCKET_MANAGER == "redis"`, a
+  `socketio.AsyncRedisManager` is attached as `client_manager` (its URL is the WebSocket
+  Redis URL, rebuilt into a `redis+sentinel://` form when sentinels are configured).
+  Without Redis, no manager is set and fan-out is local only.
 
-# Without Redis (single-instance)
-else:
-    sio = socketio.AsyncServer(
-        # Same config but no client_manager
-    )
-```
+> **Directive 5 — ping values come from symbols, not literals.** `ping_interval` and
+> `ping_timeout` are set to `WEBSOCKET_SERVER_PING_INTERVAL` / `WEBSOCKET_SERVER_PING_TIMEOUT`
+> (defaults `25` / `20` seconds at time of writing), **not** hard-coded `25`/`20`. See
+> [heartbeats.md](./heartbeats.md) Layer 1 for how these drive dead-connection detection.
 
-### ASGI Mounting
+### ASGI mounting
 
-The Socket.IO ASGI app is mounted at `/ws`:
+`socketio.ASGIApp(sio, socketio_path="/ws/socket.io")` is exported as `app` and mounted
+in `main.py` via `app.mount("/ws", socket_app)`.
 
-```python
-# socket/main.py
-app = socketio.ASGIApp(sio, socketio_path="/ws/socket.io")
+### WebSocket upgrade guard
 
-# main.py
-app.mount("/ws", socket_app)
-```
+`WebsocketUpgradeGuardMiddleware` (a pure-ASGI middleware class in
+`utils/asgi_middleware.py`, added via `app.add_middleware(...)`) rejects requests to
+`/ws/socket.io` that claim `transport=websocket` but lack a valid `Upgrade: websocket` /
+`Connection: upgrade` header pair, returning HTTP 400.
 
-### WebSocket Upgrade Middleware (`main.py`)
-
-A middleware validates WebSocket upgrade requests before they reach Socket.IO:
-
-```python
-@app.middleware("http")
-async def inspect_websocket(request: Request, call_next):
-    if "/ws/socket.io" in request.url.path and request.query_params.get("transport") == "websocket":
-        upgrade = (request.headers.get("Upgrade") or "").lower()
-        connection = (request.headers.get("Connection") or "").lower().split(",")
-        if upgrade != "websocket" or "upgrade" not in connection:
-            return JSONResponse(status_code=400, content={"detail": "Invalid WebSocket upgrade request"})
-    return await call_next(request)
-```
-
-This works around an [upstream Engine.IO issue](https://github.com/miguelgrinberg/python-engineio/issues/367).
+> **Directive 4/6 — it's a middleware class now, not a decorator.** A prior version of
+> this doc showed an `@app.middleware("http")` function named `inspect_websocket`. The
+> current implementation is the ASGI class above; the logic and rationale are unchanged —
+> it works around python-engineio issue #367, where engineio mishandles such requests.
 
 ---
 
-## Client Setup
+## Client Setup (`src/routes/+layout.svelte`)
 
-### Socket.IO Connection (`src/routes/+layout.svelte`)
+`setupSocket(enableWebsocket)` builds the client via `io(WEBUI_BASE_URL, {...})`:
 
-```javascript
-const _socket = io(`${WEBUI_BASE_URL}` || undefined, {
-    reconnection: true,
-    reconnectionDelay: 1000,
-    reconnectionDelayMax: 5000,
-    randomizationFactor: 0.5,
-    path: '/ws/socket.io',
-    transports: enableWebsocket ? ['websocket'] : ['polling', 'websocket'],
-    auth: { token: localStorage.token }
-});
-```
+- **Reconnection**: enabled, `reconnectionDelay: 1000` → `reconnectionDelayMax: 5000`,
+  `randomizationFactor: 0.5`.
+- **Path**: `/ws/socket.io` (matches the server mount).
+- **Transport**: `["websocket"]` when enabled, else `["polling", "websocket"]` (poll then
+  upgrade).
+- **Auth**: `{ token: localStorage.token }` in the handshake.
 
-**Connection parameters**:
-- **Reconnection**: Enabled with exponential backoff (1s to 5s, randomized)
-- **Path**: `/ws/socket.io` matches the server mount
-- **Transport**: Pure WebSocket when enabled; falls back to polling + WebSocket upgrade otherwise
-- **Auth**: JWT token sent in the `auth` handshake object
-
-### Client Events
-
-| Event | Direction | Purpose |
-|---|---|---|
-| `connect` | Server -> Client | Connection established |
-| `connect_error` | Server -> Client | Connection failed |
-| `disconnect` | Server -> Client | Connection lost |
-| `reconnect_attempt` | Library | Reconnection in progress |
-| `reconnect_failed` | Library | All reconnection attempts exhausted |
+Library/connection events the client listens for: `connect`, `connect_error`,
+`disconnect` (plus Socket.IO's built-in reconnection events). The socket instance is
+published to the `socket` store and liveness to `socketConnected` (`stores/index.ts`).
 
 ---
 
-## Socket.IO Events (Application Level)
+## Application Events
 
-### Session Management
+### Session management
 
-#### `connect` (server-side)
-```python
-@sio.event
-async def connect(sid, environ, auth):
-    # Decode JWT token from auth
-    # Look up user in database
-    # Store in SESSION_POOL with last_seen_at
-    # Join user:{id} room
-```
+- **`connect`** (`@sio.event`, server): decodes the JWT from `auth["token"]`, looks up the
+  user, stores `SESSION_POOL[sid] = {…user, last_seen_at}`, and joins the `user:{id}` room.
+- **`user-join`** (`@sio.on("user-join")`, client→server): re-authenticates after
+  reconnection, refreshes `SESSION_POOL`, rejoins `user:{id}` and (with the `channels`
+  permission) the user's `channel:{id}` rooms, and returns `{id, name}`.
+- **`heartbeat`** (client→server): refreshes `last_seen_at` and persists activity — see
+  [heartbeats.md](./heartbeats.md).
+- **`disconnect`** (`@sio.event`, server) — note the signature is `disconnect(sid, reason=None)`:
+  deletes `SESSION_POOL[sid]`, removes the sid from `USAGE_POOL`, and calls
+  `YDOC_MANAGER.remove_user_from_all_documents(sid)`.
 
-#### `user-join` (client -> server)
-Emitted after reconnection to re-establish the session:
-```python
-@sio.on("user-join")
-async def user_join(sid, data):
-    # Re-authenticate via token
-    # Update SESSION_POOL
-    # Join user:{id} room
-    # Join all accessible channel rooms
-    return {"id": user.id, "name": user.name}
-```
+### Channel messaging
 
-#### `heartbeat` (client -> server)
-See [Heartbeats documentation](./heartbeats.md) for full details.
+- **`join-channels`** (client→server): joins `channel:{id}` rooms for every channel the
+  authenticated user may access (admins, or users with the `channels` permission).
+- **`events:channel`** (client→server, broadcast): the sender must already be in the room;
+  `typing` is broadcast to the channel room, `last_read_at` updates the member's read
+  marker in the DB.
+- **`events:chat`** (client→server): handles `last_read_at` for direct chats
+  (`Chats.update_chat_last_read_at_by_id`).
 
-#### `disconnect` (server-side)
-```python
-@sio.event
-async def disconnect(sid):
-    # Remove from SESSION_POOL
-    # Clean up USAGE_POOL entries
-    # Remove from all Yjs documents
-```
+### Chat streaming
 
-### Channel Messaging
+`get_event_emitter(request_info, update_db=True)` returns an async emitter for streaming
+model output.
 
-#### `join-channels` (client -> server)
-```python
-@sio.on("join-channels")
-async def join_channel(sid, data):
-    # Authenticate user
-    # Join channel:{id} rooms for all accessible channels
-```
+> **Directive 4/6 — two behaviors the old doc missed.**
+> 1. **Channel mode**: when `request_info["chat_id"]` starts with `"channel:"`, the factory
+>    returns a dedicated channel emitter (`_make_channel_emitter`) that writes model output
+>    into a channel message instead of a chat. The default emitter handles per-user chats.
+> 2. **Async DB persistence**: the default emitter emits the `events` payload to the
+>    `user:{id}` room and then `await`s the async `Chats.*` methods directly (e.g.
+>    `await Chats.upsert_message_to_chat_by_id_and_message_id(...)`). It does **not** use
+>    `asyncio.to_thread()`.
 
-#### `events:channel` (client -> server, broadcast)
-Handles typing indicators and read receipts:
-```python
-@sio.on("events:channel")
-async def channel_events(sid, data):
-    # Verify user is in the channel room
-    if event_type == "typing":
-        # Broadcast typing indicator to channel room
-    elif event_type == "last_read_at":
-        # Update member's last_read_at in database
-```
+Persisted `events` types (per the `event_type` branches): `status`, `message`
+(appended), `replace` (full replacement), `embeds`, `files`, and `source`/`citation`.
 
-### Chat Streaming
+`get_event_call()` (aliased `get_event_caller`) issues an RPC-style `sio.call("events", …, to=session_id, timeout=WEBSOCKET_EVENT_CALLER_TIMEOUT)`,
+fast-failing if the session has left `SESSION_POOL` and returning an error dict on
+`TimeoutError`.
 
-#### `events` (server -> client)
-The `get_event_emitter()` function creates an emitter for streaming chat responses:
+### Model usage tracking
 
-```python
-def get_event_emitter(request_info, update_db=True):
-    async def __event_emitter__(event_data):
-        await sio.emit("events", {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "data": event_data,
-        }, room=f"user:{user_id}")
+**`usage`** (client→server): if the sid is in `SESSION_POOL`, stamps
+`USAGE_POOL[model_id][sid] = {"updated_at": <now>}`. Entries are expired by
+`periodic_usage_pool_cleanup()` — see [heartbeats.md](./heartbeats.md).
 
-        # Also persist to database via asyncio.to_thread()
-        if event_type == "message":
-            await asyncio.to_thread(Chats.upsert_message_to_chat_by_id_and_message_id, ...)
-```
+### Collaborative document editing (Yjs)
 
-**Supported event types**:
-| Type | Purpose |
-|---|---|
-| `status` | Status updates during processing |
-| `message` | Incremental message content (appended) |
-| `replace` | Complete message content replacement |
-| `embeds` | Rich embed attachments |
-| `files` | File attachments |
-| `source` / `citation` | RAG source citations |
+Handlers: `join-note`, `ydoc:document:join`, `ydoc:document:state`,
+`ydoc:document:update`, `ydoc:awareness:update`, `ydoc:document:leave`. State lives in
+`YdocManager` (Redis Lists/Sets, or in-memory dicts) and clients sit in the
+`doc_{document_id}` room.
 
-#### `get_event_call()` (server -> client, with response)
-For bidirectional RPC-style calls with timeout:
+> **Directive 6 — two security checks that look removable but are not.**
+> - `normalize_document_id()` rewrites underscore-prefixed IDs (`note_abc`) back to the
+>   colon form (`note:abc`) **before** authorization. `YdocManager` stores keys with `:`
+>   replaced by `_`, so without this rewrite an attacker could pass `note_abc` to dodge the
+>   `note:`-keyed access check. Do not "simplify" it away.
+> - `ydoc:document:update` re-checks **write** permission on every update via
+>   `AccessGrants.has_access(..., permission="write")`. Room membership only proves *read*
+>   access, so this second check is deliberate — removing it would let any reader write.
 
-```python
-response = await sio.call(
-    "events", event_data,
-    to=request_info["session_id"],
-    timeout=WEBSOCKET_EVENT_CALLER_TIMEOUT,  # default: 300s
-)
-```
-
-### Model Usage Tracking
-
-#### `usage` (client -> server)
-```python
-@sio.on("usage")
-async def usage(sid, data):
-    model_id = data["model"]
-    USAGE_POOL[model_id] = {
-        **(USAGE_POOL[model_id] if model_id in USAGE_POOL else {}),
-        sid: {"updated_at": int(time.time())},
-    }
-```
-
-### Collaborative Document Editing (Yjs)
-
-#### `join-note` (client -> server)
-Joins a note room with access control verification.
-
-#### `ydoc:document:join` (client -> server)
-```python
-@sio.on("ydoc:document:join")
-async def ydoc_document_join(sid, data):
-    # Verify access to document
-    # Add user to YdocManager
-    # Join doc_{document_id} room
-    # Reconstruct Yjs document from stored updates
-    # Send full state to joining client
-    # Notify other participants
-```
-
-#### `ydoc:document:update` (client -> server, broadcast)
-```python
-@sio.on("ydoc:document:update")
-async def yjs_document_update(sid, data):
-    # Cancel pending save tasks for this document
-    # Append update to YdocManager
-    # Broadcast to all other editors (skip_sid=sid)
-    # Schedule debounced save (0.5s) to database
-```
-
-#### `ydoc:awareness:update` (client -> server, broadcast)
-Cursor positions and selections, broadcast to all other editors.
-
-#### `ydoc:document:leave` (client -> server)
-```python
-@sio.on("ydoc:document:leave")
-async def yjs_document_leave(sid, data):
-    # Remove user from YdocManager
-    # Leave doc room
-    # Notify other participants
-    # If no users left, clear document from Redis/memory
-```
+`ydoc:document:update` also cancels pending save tasks, appends the update to
+`YdocManager`, broadcasts to other editors (`skip_sid=sid`), and schedules a debounced
+(~0.5s) DB save. `ydoc:document:leave` removes the user and clears the document when the
+last editor leaves.
 
 ---
 
 ## Room Structure
 
-Socket.IO rooms are used to target messages to specific audiences:
-
-| Room Pattern | Purpose | Joined When |
+| Room pattern | Audience | Joined when |
 |---|---|---|
-| `user:{user_id}` | All sessions of a specific user | `connect`, `user-join` |
-| `channel:{channel_id}` | All participants in a channel | `user-join`, `join-channels` |
-| `note:{note_id}` | Users viewing a specific note | `join-note` |
-| `doc_{document_id}` | Users collaboratively editing a document | `ydoc:document:join` |
+| `user:{user_id}` | all sessions of one user | `connect`, `user-join` |
+| `channel:{channel_id}` | channel participants | `user-join`, `join-channels` |
+| `note:{note_id}` | viewers of a note | `join-note` |
+| `doc_{document_id}` | collaborative editors of a document | `ydoc:document:join` |
 
-### Utility Functions for Room Operations
-
-```python
-async def emit_to_users(event, data, user_ids):
-    """Send event to multiple users via their user:{id} rooms."""
-    for user_id in user_ids:
-        await sio.emit(event, data, room=f"user:{user_id}")
-
-async def enter_room_for_users(room, user_ids):
-    """Make all sessions of users join a room."""
-    for user_id in user_ids:
-        session_ids = get_session_ids_from_room(f"user:{user_id}")
-        for sid in session_ids:
-            await sio.enter_room(sid, room)
-
-def get_user_ids_from_room(room):
-    """Get unique user IDs from all sessions in a room."""
-    active_session_ids = get_session_ids_from_room(room)
-    return list(set([SESSION_POOL.get(sid)["id"] for sid in active_session_ids ...]))
-```
+Helper functions in `socket/main.py`: `emit_to_users(event, data, user_ids)`,
+`enter_room_for_users(room, user_ids)`, `get_session_ids_from_room(room)`,
+`get_user_ids_from_room(room)`, and `disconnect_user_sessions(user_id)` (used to
+invalidate cached role/permission data on role change or deletion).
 
 ---
 
 ## In-Memory vs. Redis-Backed State
 
-| Data Structure | Single-Instance | Multi-Instance (Redis) |
+Selection is by `WEBSOCKET_MANAGER` (`"redis"` ⇒ multi-instance). See [redis.md](./redis.md).
+
+| State | Single-instance | Multi-instance (Redis) |
 |---|---|---|
-| `SESSION_POOL` | Python `dict` | `RedisDict` (Redis Hash) |
-| `USAGE_POOL` | Python `dict` | `RedisDict` (Redis Hash) |
-| `MODELS` | Python `dict` | `RedisDict` (Redis Hash) |
-| Cleanup locks | `lambda: True` (no-op) | `RedisLock` (distributed mutex) |
-| Socket.IO event fan-out | Local only | `AsyncRedisManager` (pub/sub) |
-| Yjs document state | In-memory dicts | Redis Lists + Sets |
+| `SESSION_POOL`, `USAGE_POOL`, `MODELS` | Python `dict` | `RedisDict` (Redis Hash) |
+| Cleanup locks (`session_cleanup_lock`, `usage_cleanup_lock`) | no-op `lambda: True` | `RedisLock` (distributed mutex) |
+| Socket.IO event fan-out | local only | `AsyncRedisManager` (pub/sub) |
+| Yjs document state | in-memory dicts | Redis Lists + Sets |
 
 ---
 
 ## Environment Variables
 
+Defaults are the fallbacks in `env.py` **at time of writing**; the symbols are the
+source of truth. (Redis-specific WebSocket vars are detailed in [redis.md](./redis.md);
+ping vars in [heartbeats.md](./heartbeats.md).)
+
 | Variable | Default | Description |
 |---|---|---|
-| `ENABLE_WEBSOCKET_SUPPORT` | `True` | Enable WebSocket transport. When `False`, uses HTTP long-polling only. |
-| `WEBSOCKET_MANAGER` | `""` | Set to `redis` to enable Redis-backed cross-instance event broadcasting |
-| `WEBSOCKET_REDIS_URL` | `REDIS_URL` | Redis URL for the Socket.IO manager (can be different from main Redis) |
-| `WEBSOCKET_REDIS_CLUSTER` | `REDIS_CLUSTER` | Enable Redis Cluster mode for WebSocket Redis |
-| `WEBSOCKET_REDIS_OPTIONS` | `None` | JSON dict of redis-py options (e.g., `{"socket_connect_timeout": 5}`) |
-| `WEBSOCKET_REDIS_LOCK_TIMEOUT` | `60` | TTL for distributed cleanup locks in seconds |
-| `WEBSOCKET_SENTINEL_HOSTS` | `""` | Sentinel hosts for WebSocket Redis |
-| `WEBSOCKET_SENTINEL_PORT` | `26379` | Sentinel port for WebSocket Redis |
-| `WEBSOCKET_SERVER_LOGGING` | `False` | Enable Socket.IO debug logging |
-| `WEBSOCKET_SERVER_ENGINEIO_LOGGING` | `False` | Enable Engine.IO debug logging |
+| `ENABLE_WEBSOCKET_SUPPORT` | `True` | When `False`, server/client use HTTP long-polling instead of the WebSocket transport |
+| `WEBSOCKET_MANAGER` | `""` | Set to `redis` for Redis-backed cross-instance fan-out |
+| `WEBSOCKET_REDIS_URL` | `REDIS_URL` | Redis URL for the Socket.IO manager |
+| `WEBSOCKET_REDIS_CLUSTER` | `REDIS_CLUSTER` | Cluster mode for WebSocket Redis |
+| `WEBSOCKET_REDIS_OPTIONS` | `None` | JSON dict of extra redis-py options |
+| `WEBSOCKET_REDIS_LOCK_TIMEOUT` | `60` | TTL (seconds) for distributed cleanup locks |
+| `WEBSOCKET_SENTINEL_HOSTS` / `WEBSOCKET_SENTINEL_PORT` | `""` / `26379` | Sentinel hosts/port for WebSocket Redis |
+| `WEBSOCKET_SERVER_LOGGING` | `False` | Socket.IO debug logging |
+| `WEBSOCKET_SERVER_ENGINEIO_LOGGING` | `False` (falls back to `WEBSOCKET_SERVER_LOGGING`) | Engine.IO debug logging |
 | `WEBSOCKET_SERVER_PING_INTERVAL` | `25` | Seconds between Engine.IO server pings |
-| `WEBSOCKET_SERVER_PING_TIMEOUT` | `20` | Seconds to wait for pong before disconnecting |
-| `WEBSOCKET_EVENT_CALLER_TIMEOUT` | `None` | Timeout for RPC-style `sio.call()` in seconds (default behavior: no timeout; fallback: 300s) |
+| `WEBSOCKET_SERVER_PING_TIMEOUT` | `20` | Seconds to wait for a pong before disconnecting |
+| `WEBSOCKET_EVENT_CALLER_TIMEOUT` | `None` | Timeout (seconds) for RPC-style `sio.call()` |
+
+> **`WEBSOCKET_EVENT_CALLER_TIMEOUT` defaults to `None` (no timeout).** The value `300`
+> is **only** the fallback used when the env var is set to a non-integer string — it is
+> not the default. Verify in `env.py`.
 
 ---
 
-## Frontend Collaborative Editing Provider
+## Frontend Collaborative Editing Provider (`Collaboration.ts`)
 
-### `SocketIOCollaborationProvider` (`Collaboration.ts`)
+`SocketIOCollaborationProvider` is a custom Yjs provider that synchronizes CRDT updates
+over Socket.IO instead of a raw WebSocket. Lifecycle (by emitted/received event):
 
-A custom Yjs provider that uses Socket.IO instead of WebSocket for Yjs CRDT synchronization:
+- **Join**: emit `ydoc:document:join` with `document_id`, `user_id`, `user_name`, `user_color`.
+- **Initial state**: listen for `ydoc:document:state`, apply with `Y.applyUpdate()`.
+- **Send / receive updates**: on local Yjs `update`, emit `ydoc:document:update`; on
+  inbound `ydoc:document:update`, apply with `Y.applyUpdate()`.
+- **Awareness**: send/receive cursor and selection via `ydoc:awareness:update`.
+- **Leave**: emit `ydoc:document:leave` on destruction.
 
-**Lifecycle**:
-1. **Join**: Emit `ydoc:document:join` with `document_id`, `user_id`, `user_name`, `user_color`
-2. **Receive state**: Listen for `ydoc:document:state`, apply with `Y.applyUpdate()`
-3. **Send updates**: On local Yjs `update` event, emit `ydoc:document:update`
-4. **Receive updates**: Listen for `ydoc:document:update`, apply with `Y.applyUpdate()`
-5. **Awareness**: Send/receive cursor positions via `ydoc:awareness:update`
-6. **Leave**: Emit `ydoc:document:leave` on editor destruction
-
-**Custom `SimpleAwareness`**: A lightweight awareness implementation for cursor/selection tracking, replacing the standard Yjs awareness protocol with a Socket.IO-native approach.
+`SimpleAwareness` is a lightweight awareness implementation (cursor/selection tracking)
+that replaces the standard Yjs awareness protocol with a Socket.IO-native approach.
 
 ---
 
 ## Connection Lifecycle
 
 ```
-1. Browser loads  -->  setupSocket() called
-2. Socket.IO connects to /ws/socket.io (WebSocket or polling)
-3. Server: connect event fires
-   - Decode JWT from auth.token
-   - Look up user in DB
-   - Store in SESSION_POOL
-   - Join user:{id} room
-4. Client: connect event fires
-   - Check version compatibility
-   - Start 30s heartbeat interval
-   - Emit user-join with auth token
-5. Server: user-join handler
-   - Re-verify auth
-   - Join channel rooms
-   - Return {id, name}
+1. Browser loads  ->  setupSocket() builds the io(...) client
+2. Connect to /ws/socket.io (websocket, or polling->upgrade)
+3. Server `connect`: decode JWT from auth.token, look up user,
+   store in SESSION_POOL, join user:{id} room
+4. Client `connect`: version check, start 30s heartbeat interval,
+   emit `user-join` with the auth token
+5. Server `user-join`: re-verify auth, join channel rooms, return {id, name}
 6. Normal operation: events flow bidirectionally
 7. Disconnect:
-   - Client: clear heartbeat interval
-   - Server: clean up SESSION_POOL, USAGE_POOL, Yjs documents
+   - Client: clear heartbeat interval (and show a reconnect toast after a short delay)
+   - Server `disconnect(sid, reason)`: clean up SESSION_POOL, USAGE_POOL, Yjs docs
+```
+
+---
+
+## Verification Recipe
+
+Run from the repo root. If any line's expectation is violated, the doc is stale and must
+be re-audited before it is trusted.
+
+```bash
+# Socket DB writes are async (no to_thread in the socket layer)
+test "$(grep -c to_thread backend/open_webui/socket/main.py)" = 0 && echo "no to_thread (expected)"
+grep -rn "await Chats.upsert_message_to_chat_by_id_and_message_id" backend/open_webui/socket/main.py
+
+# Server config pulls ping from symbols, attaches Redis manager conditionally
+grep -rn "ping_interval=WEBSOCKET_SERVER_PING_INTERVAL\|ping_timeout=WEBSOCKET_SERVER_PING_TIMEOUT\|AsyncRedisManager" backend/open_webui/socket/main.py
+grep -rn "socketio_path='/ws/socket.io'\|socketio_path=\"/ws/socket.io\"" backend/open_webui/socket/main.py
+grep -rn "app.mount\(.\/ws." backend/open_webui/main.py
+
+# Upgrade guard is an ASGI middleware class, not @app.middleware("http")
+grep -rn "class WebsocketUpgradeGuardMiddleware" backend/open_webui/utils/asgi_middleware.py
+grep -rn "add_middleware(WebsocketUpgradeGuardMiddleware)" backend/open_webui/main.py
+
+# Key handlers + signatures
+grep -rn "async def connect(\|async def disconnect(sid, reason\|async def user_join(\|def get_event_emitter\|def get_event_call\|def _make_channel_emitter\|@sio.on('events:chat')" backend/open_webui/socket/main.py
+
+# Security-critical ydoc checks (Directive 6)
+grep -rn "def normalize_document_id\|room membership only proves read access\|permission='write'" backend/open_webui/socket/main.py
+
+# Event-caller timeout default is None; 300 is only the bad-value fallback
+grep -rn "WEBSOCKET_EVENT_CALLER_TIMEOUT" backend/open_webui/env.py
+
+# Frontend
+grep -rn "setupSocket\|path: '/ws/socket.io'\|emit('user-join'" src/routes/+layout.svelte
+grep -rn "class SocketIOCollaborationProvider\|class SimpleAwareness" src/lib/components/common/RichTextInput/Collaboration.ts
+grep -rn "export const socket" src/lib/stores/index.ts
 ```

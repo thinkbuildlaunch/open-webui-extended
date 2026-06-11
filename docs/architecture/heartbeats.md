@@ -1,285 +1,232 @@
+---
+# Machine-readable anchor block — see Directive 8.
+covers_files:
+  - src/routes/+layout.svelte
+  - backend/open_webui/socket/main.py
+  - backend/open_webui/socket/utils.py
+  - backend/open_webui/models/users.py
+  - backend/open_webui/env.py
+covers_symbols:
+  - { symbol: heartbeat, file: backend/open_webui/socket/main.py }
+  - { symbol: SESSION_POOL_TIMEOUT, file: backend/open_webui/socket/main.py }
+  - { symbol: periodic_session_pool_cleanup, file: backend/open_webui/socket/main.py }
+  - { symbol: periodic_usage_pool_cleanup, file: backend/open_webui/socket/main.py }
+  - { symbol: update_last_active_by_id, file: backend/open_webui/models/users.py }
+  - { symbol: WEBSOCKET_SERVER_PING_INTERVAL, file: backend/open_webui/env.py }
+  - { symbol: WEBSOCKET_SERVER_PING_TIMEOUT, file: backend/open_webui/env.py }
+verified_against_commit: 304d2d673749691abad905b96230b30ddb77e145
+---
+
 # Heartbeats
 
-The heartbeat system in Open WebUI Extended provides client liveness detection, session reaping, and user activity tracking. It operates at multiple layers to ensure robust detection of disconnected clients, especially in multi-instance deployments where a client may be connected to one instance while another handles cleanup.
+The heartbeat system in Open WebUI Extended provides client liveness detection,
+session reaping, and user activity tracking. It operates at multiple layers to
+ensure robust detection of disconnected clients, especially in multi-instance
+deployments where a client may be connected to one instance while another handles
+cleanup.
 
 ---
 
 ## Relevant Files
 
-| File | Purpose |
+| File | Subject (grep for these symbols) |
 |---|---|
-| `src/routes/+layout.svelte` (lines 103, 141-147, 175-181) | Client-side heartbeat emission (30s interval) |
-| `backend/open_webui/socket/main.py` (lines 83-84, 103, 179-201, 204-253, 410-415) | Server-side heartbeat handler, ping/pong config, session reaping, usage cleanup |
-| `backend/open_webui/socket/utils.py` (lines 9-47) | `RedisLock` used for distributed cleanup coordination |
-| `backend/open_webui/env.py` (lines 779-789) | `WEBSOCKET_SERVER_PING_INTERVAL` and `WEBSOCKET_SERVER_PING_TIMEOUT` configuration |
+| `src/routes/+layout.svelte` | `heartbeatInterval` — client-side heartbeat emission |
+| `backend/open_webui/socket/main.py` | `heartbeat`, `SESSION_POOL`, `SESSION_POOL_TIMEOUT`, `periodic_session_pool_cleanup`, `periodic_usage_pool_cleanup`, `USAGE_POOL`, `TIMEOUT_DURATION` |
+| `backend/open_webui/socket/utils.py` | `RedisLock` — distributed cleanup coordination |
+| `backend/open_webui/models/users.py` | `update_last_active_by_id` — DB activity write |
+| `backend/open_webui/env.py` | `WEBSOCKET_SERVER_PING_INTERVAL`, `WEBSOCKET_SERVER_PING_TIMEOUT` |
 
 ---
 
 ## Three Layers of Heartbeat
 
-The system uses three distinct heartbeat mechanisms, each operating at a different level:
+The system uses three distinct mechanisms, each operating at a different level.
 
-### Layer 1: Engine.IO Ping/Pong (Transport Level)
+### Layer 1: Engine.IO Ping/Pong (transport level)
 
-**Purpose**: Detect dead TCP connections at the transport layer.
+**Contract**: the Socket.IO server (via Engine.IO) detects dead TCP connections.
+The server sends a `ping` frame at a fixed interval; the client must answer with a
+`pong` within the timeout, or the server closes the connection and fires its
+`disconnect` event.
 
-**How it works**:
-- The Socket.IO server (via Engine.IO) sends a `ping` frame to each client at a configurable interval
-- The client must respond with a `pong` frame within the timeout
-- If no `pong` is received, the server closes the connection and fires a `disconnect` event
+The interval and timeout are passed to `socketio.AsyncServer(...)` in `socket/main.py`
+from two env vars (defined in `env.py`):
 
-**Configuration** (in `socket/main.py`):
-```python
-sio = socketio.AsyncServer(
-    ping_interval=WEBSOCKET_SERVER_PING_INTERVAL,  # default: 25 seconds
-    ping_timeout=WEBSOCKET_SERVER_PING_TIMEOUT,     # default: 20 seconds
-    ...
-)
-```
-
-**Environment variables**:
-| Variable | Default | Description |
+| Env var | Default at time of writing | Meaning |
 |---|---|---|
-| `WEBSOCKET_SERVER_PING_INTERVAL` | `25` | Seconds between server-initiated pings |
-| `WEBSOCKET_SERVER_PING_TIMEOUT` | `20` | Seconds to wait for pong response |
+| `WEBSOCKET_SERVER_PING_INTERVAL` | `25` (seconds) | Time between server-initiated pings |
+| `WEBSOCKET_SERVER_PING_TIMEOUT` | `20` (seconds) | Time to wait for a `pong` before disconnecting |
+
+The defaults are the fallbacks assigned in `env.py` when the env var is unset or
+unparseable — treat the symbols as the source of truth, not these copies.
+
+**Characteristics** (falsifiable against the `AsyncServer` constructor args):
+- Fully handled by the Socket.IO/Engine.IO library; transparent to application code.
+- Detects network drops, client crashes, and browser-tab closes.
+- Does **not** detect an application-level freeze in which the Socket.IO library is
+  still able to answer pings.
+
+### Layer 2: Application Heartbeat (client-initiated)
+
+**Contract**: track user activity at the application level and refresh the
+`last_seen_at` timestamp the server keeps per session.
+
+- **Client** (`heartbeatInterval` in `+layout.svelte`): on a successful socket
+  `connect`, the client starts an interval that emits a `heartbeat` event (empty
+  payload) every 30 seconds while `_socket.connected` is true, and clears that
+  interval on `disconnect`. The 30s cadence is a literal in the `setInterval` call,
+  not a shared constant.
+- **Server** (`heartbeat` handler in `socket/main.py`): looks up the session in
+  `SESSION_POOL`; if present, rewrites the entry with a fresh `last_seen_at` (current
+  Unix time) and **awaits** `Users.update_last_active_by_id(user["id"])`.
+
+> **Directive 4 — contract, not a copy.** The handler `await`s
+> `Users.update_last_active_by_id()` directly. That method is `async def` and runs its
+> `UPDATE … SET last_active_at` through an `AsyncSession` (`get_async_db_context()` in
+> `models/users.py`) — it is **not** a synchronous DB call dispatched to a thread pool.
+> Any doc or refactor that treats it as sync (e.g. wrapping it in `run_in_executor`) is
+> wrong.
 
 **Characteristics**:
-- Fully handled by the Socket.IO/Engine.IO library
-- Transparent to application code
-- Detects: network drops, client crashes, browser tab closes
-- Does NOT detect: client application freezes where the Socket.IO library still responds
+- Updates both the in-memory/Redis session state (`SESSION_POOL`) *and* the persistent
+  `last_active_at` column.
+- The client's 30s emit cadence is longer than the default ping interval (25s), so a
+  client answering pings but not emitting heartbeats stays "alive" at the transport
+  layer yet can still be reaped by Layer 3.
 
-### Layer 2: Application Heartbeat (Client-Initiated)
+### Layer 3: Session Reaping (server-side cleanup)
 
-**Purpose**: Track user activity at the application level and update `last_seen_at` timestamps.
+**Contract**: `periodic_session_pool_cleanup()` removes orphaned `SESSION_POOL`
+entries that stopped sending heartbeats (instance crash, network partition, stuck
+client) so they do not leak indefinitely.
 
-**Client side** (`src/routes/+layout.svelte`):
-```javascript
-// On successful socket connection
-heartbeatInterval = setInterval(() => {
-    if (_socket.connected) {
-        console.log('Sending heartbeat');
-        _socket.emit('heartbeat', {});
-    }
-}, 30000);  // Every 30 seconds
+Behavior, expressed as invariants you can check against the function body:
+- Runs as an `asyncio.create_task()` started in the `main.py` lifespan.
+- Acquires a distributed `RedisLock` (`session_cleanup_lock`) up front and returns
+  immediately if another node holds it — so exactly one instance runs the loop.
+- Each iteration: renews the lock (exiting if renewal fails), then deletes any session
+  whose age exceeds the threshold, using a **strict** comparison
+  `now - last_seen_at > SESSION_POOL_TIMEOUT`.
+- Sleeps for `SESSION_POOL_TIMEOUT` between scans, and releases the lock on exit.
 
-// On disconnect
-if (heartbeatInterval) {
-    clearInterval(heartbeatInterval);
-    heartbeatInterval = null;
-}
-```
+The single magic number lives in one place:
 
-**Server side** (`socket/main.py`):
-```python
-@sio.on("heartbeat")
-async def heartbeat(sid, data):
-    user = SESSION_POOL.get(sid)
-    if user:
-        SESSION_POOL[sid] = {**user, "last_seen_at": int(time.time())}
-        Users.update_last_active_by_id(user["id"])
-```
-
-**What happens on each heartbeat**:
-1. Client emits `heartbeat` event (empty payload `{}`)
-2. Server looks up the session in `SESSION_POOL`
-3. Updates `last_seen_at` to current Unix timestamp
-4. Calls `Users.update_last_active_by_id()` to update the database `last_active_at` column
-
-**Characteristics**:
-- Application-level liveness signal
-- Updates both in-memory/Redis state AND the persistent database
-- 30-second interval is longer than the Engine.IO ping (25s), so a client that responds to pings but doesn't emit heartbeats is still considered "alive" for transport purposes but may be reaped by the session cleanup
-
-### Layer 3: Session Reaping (Server-Side Cleanup)
-
-**Purpose**: Remove orphaned sessions that missed heartbeats (e.g., instance crash, network partition, stuck clients).
-
-**Implementation** (`socket/main.py`):
-```python
-SESSION_POOL_TIMEOUT = 120  # seconds without heartbeat before session is reaped
-
-async def periodic_session_pool_cleanup():
-    """Reap orphaned SESSION_POOL entries that missed heartbeats."""
-    if not session_aquire_func():
-        log.debug("Session cleanup lock held by another node. Skipping.")
-        return
-
-    try:
-        while True:
-            if not session_renew_func():
-                log.error("Unable to renew session cleanup lock. Exiting.")
-                return
-
-            now = int(time.time())
-            for sid in list(SESSION_POOL.keys()):
-                entry = SESSION_POOL.get(sid)
-                if entry and now - entry.get("last_seen_at", 0) > SESSION_POOL_TIMEOUT:
-                    log.warning(f"Reaping orphaned session {sid} (user {entry.get('id')})")
-                    del SESSION_POOL[sid]
-            await asyncio.sleep(SESSION_POOL_TIMEOUT)
-    finally:
-        session_release_func()
-```
-
-**Key behaviors**:
-- Runs as an `asyncio.create_task()` background task started during application lifespan
-- Scans every 120 seconds (`SESSION_POOL_TIMEOUT`)
-- Reaps any session where `now - last_seen_at > 120 seconds`
-- Uses a distributed lock (`RedisLock`) so only ONE instance performs cleanup in multi-instance deployments
-- The lock is renewed each iteration and released on exit
+| Symbol | Value at time of writing | Role |
+|---|---|---|
+| `SESSION_POOL_TIMEOUT` | `120` (seconds) | Both the reap age threshold *and* the inter-scan sleep |
 
 ---
 
-## Timing Diagram
+## Timing: Reap Latency Is a Range, Not an Instant
 
-```
-Time(s)  Client                    Server
-──────────────────────────────────────────────────────────
-  0      connect ───────────────>  SESSION_POOL[sid] = {last_seen_at: 0}
-                                   sio.enter_room(sid, "user:{id}")
+Because the scan loop sleeps `SESSION_POOL_TIMEOUT` between passes and its phase
+relative to a client's last heartbeat is arbitrary, reaping is **not** a single
+deterministic moment. Model it as a range and a precondition:
 
- 25                   <─────────── Engine.IO ping
-         Engine.IO pong ────────>
+- **Precondition**: reaping only matters on the path where the Engine.IO `disconnect`
+  never fired — e.g. the instance holding the connection died, so no `disconnect`
+  handler ran to delete the session. In the normal case, the `disconnect` handler
+  removes the `SESSION_POOL` entry (and its `USAGE_POOL` entries and ydoc memberships)
+  long before the reaper looks.
+- **Latency range**: a session is removed on the first scan that observes
+  `now - last_seen_at > SESSION_POOL_TIMEOUT`. Depending on where the client's last
+  heartbeat fell within the loop's sleep window, that lands anywhere from just over
+  `SESSION_POOL_TIMEOUT` to roughly `2 × SESSION_POOL_TIMEOUT` after the last
+  heartbeat.
 
- 30      emit('heartbeat') ─────>  SESSION_POOL[sid].last_seen_at = 30
-                                   Users.update_last_active_by_id()
+The two cleanup paths:
 
- 50                   <─────────── Engine.IO ping
-         Engine.IO pong ────────>
-
- 60      emit('heartbeat') ─────>  SESSION_POOL[sid].last_seen_at = 60
-
- 75                   <─────────── Engine.IO ping
-         Engine.IO pong ────────>
-
- 90      emit('heartbeat') ─────>  SESSION_POOL[sid].last_seen_at = 90
-
- 95      *** Client crashes ***
-
-100                   <─────────── Engine.IO ping
-         (no pong)
-120                                Engine.IO: connection timeout
-                                   disconnect event fires
-                                   del SESSION_POOL[sid]
-
---- OR if disconnect event was missed (e.g., instance crash) ---
-
-120                                periodic_session_pool_cleanup() runs
-                                   now(210) - last_seen_at(90) = 120 > 120
-                                   Reaps session
-```
+1. **Clean disconnect** — client closes gracefully (tab close, navigation, explicit
+   disconnect). The server's `disconnect` handler fires, deletes `SESSION_POOL[sid]`,
+   cleans this sid out of `USAGE_POOL`, and calls
+   `YDOC_MANAGER.remove_user_from_all_documents(sid)`.
+2. **Orphaned session (reaping)** — client vanishes without a `disconnect` (network
+   failure, instance crash, OOM kill). If the owning instance also died, no
+   `disconnect` fires anywhere; the entry sits in `SESSION_POOL` (a Redis hash in
+   multi-instance mode) with a stale `last_seen_at` until `periodic_session_pool_cleanup()`
+   reaps it. This is the multi-instance safety net.
 
 ---
 
-## Usage Pool Cleanup
+## Usage Pool Cleanup (parallel mechanism)
 
-In addition to session heartbeats, there's a parallel cleanup for model usage tracking:
+`periodic_usage_pool_cleanup()` is a separate loop that expires model-usage entries
+rather than sessions:
 
-```python
-TIMEOUT_DURATION = 3  # seconds
-
-async def periodic_usage_pool_cleanup():
-    # Acquire distributed lock with retry
-    for attempt in range(max_retries + 1):
-        if aquire_func():
-            break
-        await asyncio.sleep(retry_delay)
-
-    while True:
-        now = int(time.time())
-        for model_id, connections in list(USAGE_POOL.items()):
-            expired_sids = [
-                sid for sid, details in connections.items()
-                if now - details["updated_at"] > TIMEOUT_DURATION
-            ]
-            for sid in expired_sids:
-                del connections[sid]
-            if not connections:
-                del USAGE_POOL[model_id]
-            else:
-                USAGE_POOL[model_id] = connections
-        await asyncio.sleep(TIMEOUT_DURATION)
-```
-
-**Key differences from session cleanup**:
-- Much shorter timeout: 3 seconds (vs. 120 for sessions)
-- Tracks model inference usage, not session liveness
-- Client emits `usage` events during active model inference
-- Also uses a distributed `RedisLock` for coordination
-- Lock acquisition includes retry with random backoff
+- Tracks active model inference: clients emit `usage` events, which stamp
+  `USAGE_POOL[model_id][sid]["updated_at"]`.
+- Expiry threshold is `TIMEOUT_DURATION` (3 seconds at time of writing) — far shorter
+  than `SESSION_POOL_TIMEOUT`, because it reflects in-flight inference, not session
+  liveness.
+- Also guarded by a distributed `RedisLock` (`usage_cleanup_lock`), but its lock
+  acquisition retries with a randomized backoff (see `periodic_usage_pool_cleanup`),
+  whereas session cleanup skips immediately if the lock is held.
 
 ---
 
 ## Distributed Lock Coordination
 
-In multi-instance deployments, both cleanup tasks use `RedisLock` to ensure only one instance runs the cleanup loop:
+Both cleanup loops use `RedisLock` (`socket/utils.py`) so only one instance runs each
+loop in a multi-instance deployment. The locks are named with the `REDIS_KEY_PREFIX`
+namespace: `…:session_cleanup_lock` and `…:usage_cleanup_lock`.
 
-```python
-# For session cleanup
-session_cleanup_lock = RedisLock(
-    redis_url=WEBSOCKET_REDIS_URL,
-    lock_name=f"{REDIS_KEY_PREFIX}:session_cleanup_lock",
-    timeout_secs=WEBSOCKET_REDIS_LOCK_TIMEOUT,  # default: 60s
-    ...
-)
+Lock contract (check against `RedisLock.aquire_lock` / `renew_lock` / `release_lock`):
+- **Acquire**: `SET name uuid NX EX timeout` — succeeds only if no lock exists.
+- **Renew**: `SET name uuid XX EX timeout` — extends the TTL only if the lock still
+  exists; each loop iteration renews.
+- **Release**: deletes the key only when its value matches this instance's UUID, so one
+  instance can never release another's lock.
+- **Failover**: if the lock holder dies, the key auto-expires after
+  `WEBSOCKET_REDIS_LOCK_TIMEOUT` (60s at time of writing, from `env.py`) and another
+  instance acquires it.
 
-# For usage cleanup
-clean_up_lock = RedisLock(
-    redis_url=WEBSOCKET_REDIS_URL,
-    lock_name=f"{REDIS_KEY_PREFIX}:usage_cleanup_lock",
-    timeout_secs=WEBSOCKET_REDIS_LOCK_TIMEOUT,
-    ...
-)
-```
-
-**Lock lifecycle**:
-1. **Acquire**: `SET lock_name uuid NX EX 60` - succeeds only if no lock exists
-2. **Renew**: Each cleanup iteration calls `SET lock_name uuid XX EX 60` - extends TTL
-3. **Release**: On cleanup task exit, deletes the key if value matches our UUID
-4. **Failover**: If the instance holding the lock crashes, the lock auto-expires after `WEBSOCKET_REDIS_LOCK_TIMEOUT` seconds, and another instance acquires it
-
-In single-instance mode, lock functions are no-ops: `lambda: True`.
-
----
-
-## Disconnect Event vs. Session Reaping
-
-There are two paths for session cleanup:
-
-### Path 1: Clean Disconnect
-- Client disconnects gracefully (browser close, navigation, explicit disconnect)
-- Server receives `disconnect` event immediately
-- `SESSION_POOL[sid]` is deleted
-- `USAGE_POOL` entries for this session are cleaned up
-- `YdocManager.remove_user_from_all_documents(sid)` is called
-
-### Path 2: Orphaned Session (Reaping)
-- Client disappears without disconnect (network failure, instance crash, OOM kill)
-- Engine.IO ping/pong may eventually detect and fire `disconnect` on the local instance
-- **But**: If the instance that held the connection also crashed, no `disconnect` fires
-- The session remains in `SESSION_POOL` (Redis hash) with a stale `last_seen_at`
-- `periodic_session_pool_cleanup()` detects it after 120s and reaps it
-- This is the safety net for multi-instance deployments
+In single-instance mode (`WEBSOCKET_MANAGER` not `redis`), the lock acquire/renew/
+release functions are no-ops bound to `lambda: True`, and `SESSION_POOL` / `USAGE_POOL`
+are plain Python dicts.
 
 ---
 
 ## Connection to Other Components
 
-### Heartbeats + Redis
-- `SESSION_POOL` is a `RedisDict` in multi-instance mode, so heartbeat timestamps are visible to all instances
-- The cleanup lock ensures coordinated reaping across instances
-- Single-instance mode uses plain Python dicts
+- **Redis** — In multi-instance mode `SESSION_POOL` is a `RedisDict`, so heartbeat
+  timestamps are visible to every instance and the cleanup lock coordinates reaping
+  across them. See [redis.md](./redis.md).
+- **SQLAlchemy** — each heartbeat awaits `Users.update_last_active_by_id()`, persisting
+  `last_active_at` beyond the in-memory/Redis session state. It is fully async (see the
+  Directive 4 note above).
+- **WebSockets** — heartbeats ride the Socket.IO connection; the client clears its
+  interval when the socket drops, and Engine.IO ping/pong is the first line of defense
+  for connection health.
 
-### Heartbeats + SQLAlchemy
-- Each heartbeat triggers `Users.update_last_active_by_id()`, which updates the `last_active_at` column in the database
-- This provides a persistent record of user activity beyond the in-memory/Redis session state
+---
 
-### Heartbeats + WebSockets
-- Heartbeats ride on the WebSocket connection established by Socket.IO
-- If the WebSocket drops, the heartbeat interval is cleared client-side
-- The Engine.IO ping/pong provides the first line of defense for connection health
+## Verification Recipe
 
-### Heartbeats + ThreadPooling
-- The `Users.update_last_active_by_id()` call in the heartbeat handler is a synchronous database operation called from an async context
-- It runs on the default thread pool (governed by `THREAD_POOL_SIZE`)
+Run from the repo root. If any line returns nothing, the doc is stale and must be
+re-audited before it is trusted.
+
+```bash
+# Client-side heartbeat emitter
+grep -rn "heartbeatInterval" src/routes/+layout.svelte
+
+# Server-side heartbeat handler + the awaited async DB write
+grep -rn "async def heartbeat" backend/open_webui/socket/main.py
+grep -rn "await Users.update_last_active_by_id" backend/open_webui/socket/main.py
+grep -rn "async def update_last_active_by_id" backend/open_webui/models/users.py
+
+# Session reaping: function, threshold constant, strict comparison
+grep -rn "def periodic_session_pool_cleanup" backend/open_webui/socket/main.py
+grep -rn "SESSION_POOL_TIMEOUT" backend/open_webui/socket/main.py
+grep -rn "0) > SESSION_POOL_TIMEOUT" backend/open_webui/socket/main.py
+
+# Usage cleanup + its threshold
+grep -rn "def periodic_usage_pool_cleanup" backend/open_webui/socket/main.py
+grep -rn "TIMEOUT_DURATION = " backend/open_webui/socket/main.py
+
+# Ping/pong config + defaults
+grep -rn "WEBSOCKET_SERVER_PING_INTERVAL\|WEBSOCKET_SERVER_PING_TIMEOUT" backend/open_webui/env.py
+
+# Distributed cleanup locks
+grep -rn "session_cleanup_lock\|usage_cleanup_lock" backend/open_webui/socket/main.py
+```
