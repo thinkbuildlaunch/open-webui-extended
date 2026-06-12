@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8 / Directive 11.
+# Machine-readable anchor block — see I.8 / Part II.
 covers_files:
   - backend/open_webui/retrieval/vector/main.py
   - backend/open_webui/retrieval/vector/dbs/pgvector.py
@@ -113,7 +113,7 @@ Contract (read the constructor; it is wrapped in `try/except` that rolls back an
 
 ## 6. Indexing Strategy (IVFFLAT **and** HNSW)
 
-> **Directive 6 — intentional: index method is chosen, and mismatches are NOT auto-fixed.**
+> **I.6 — intentional: index method is chosen, and mismatches are NOT auto-fixed.**
 
 `_vector_index_configuration()` returns `(index_method, index_options)`:
 

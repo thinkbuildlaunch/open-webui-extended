@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8 / Directive 11.
+# Machine-readable anchor block — see I.8 / Part II.
 covers_files:
   - src/lib/utils/csp.ts
   - src/lib/components/chat/Artifacts.svelte
@@ -31,7 +31,7 @@ execute HTML/CSS/JavaScript. Built on Svelte/SvelteKit + TypeScript.
 > `sandbox="allow-scripts allow-same-origin"`. The real implementation uses `srcdoc` with
 > an **injected Content-Security-Policy** and a **default sandbox of `allow-scripts
 > allow-downloads`**, where `allow-same-origin`/`allow-forms` are opt-in. Two ~600-line
-> example dashboards were condensed to one representative artifact (Directive 4: describe
+> example dashboards were condensed to one representative artifact (I.4: describe
 > capability, don't transcribe large payloads); no capability claim was dropped.
 
 ---
@@ -77,7 +77,7 @@ Two tiers, by context:
      (`$settings?.iframeSandboxAllowForms` / `$settings?.iframeSandboxAllowSameOrigin`,
      both default `false`).
 
-> **Directive 6 — do not "simplify" the sandbox string.** It is built so that
+> **I.6 — do not "simplify" the sandbox string.** It is built so that
 > same-origin and form submission are **off by default**; granting `allow-same-origin`
 > unconditionally would let artifact JS reach cookies/storage of the app origin. The
 > opt-in gating is deliberate.

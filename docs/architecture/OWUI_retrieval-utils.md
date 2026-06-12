@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8 / Directive 11.
+# Machine-readable anchor block — see I.8 / Part II.
 covers_files:
   - backend/open_webui/retrieval/utils.py
   - backend/open_webui/retrieval/vector/async_client.py
@@ -147,7 +147,7 @@ Chunked retrieval calls `filter_accessible_collections` (§7) before searching, 
   → `has_access_to_file`; `user-memory-*` must equal the user's own; `web-search-*` (ephemeral)
   allowed; otherwise treated as a KB id and validated via `Knowledges.check_access_by_user_id`,
   with unknown names allowed only when `ENABLE_RETRIEVAL_UNSCOPED_COLLECTIONS` is set.
-  > **Directive 6 — the unsafe-name rejection runs before the admin bypass on purpose**: a
+  > **I.6 — the unsafe-name rejection runs before the admin bypass on purpose**: a
   > malformed name must never reach the vector store (it could break out of a backend query
   > literal), even for an admin.
 - **Item access** in `get_sources_from_items` uses `AccessGrants.has_access` (notes/knowledge),

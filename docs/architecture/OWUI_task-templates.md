@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8 / Directive 11.
+# Machine-readable anchor block — see I.8 / Part II.
 covers_files:
   - backend/open_webui/utils/task.py
   - backend/open_webui/config.py
@@ -87,7 +87,7 @@ model should run a background task:
   `name`, `email`, `location` (from `user["info"]`), `bio`, `gender`, `birth_date`, computed
   `age` (from `date_of_birth`), and `groups`. Each maps to a `{{USER_*}}` token, defaulting
   to `"Unknown"` (groups defaults to empty string).
-  > **Lazy, conditional DB access (Directive 6).** `{{USER_GROUPS}}` is the one variable that
+  > **Lazy, conditional DB access (I.6).** `{{USER_GROUPS}}` is the one variable that
   > requires a query (`Groups.get_groups_by_member_id`), so the lookup runs **only when the
   > template actually contains `{{USER_GROUPS}}`** — and is wrapped in `try/except` so a
   > failure degrades to empty rather than breaking prompt generation. Don't hoist it.
@@ -123,7 +123,7 @@ model should run a background task:
 4. Substitute `[context]`/`{{CONTEXT}}` → `context`, then `[query]`/`{{QUERY}}` → `query`.
 5. Restore each protected token back to its **original literal** (`[query]` / `{{QUERY}}`).
 
-> **Corrected semantics (Directive 4/6).** In the protected branch the restoration maps
+> **Corrected semantics (I.4/I.6).** In the protected branch the restoration maps
 > `uuid_token → original literal placeholder`, **not** `→ query value` as the original doc
 > claimed. The effect: when the retrieved context echoes query-like tokens, the substitution
 > step fills *those* (context-originated) tokens, while the template's genuine placeholders

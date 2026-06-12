@@ -159,13 +159,13 @@ backend/open_webui/
 │   │   ├── async_client.py# ASYNC_VECTOR_DB_CLIENT wrapper      -> retrieval-utils
 │   │   ├── main.py        # VectorDBBase, SearchResult          -> vector-pgvector
 │   │   ├── factory.py  type.py  utils.py
-│   │   └── dbs/           # 15 backends (pgvector documented;    -> vector-pgvector (pgvector)
+│   │   └── dbs/           # pluggable backends (pgvector documented; -> vector-pgvector (pgvector)
 │   │                      #   chroma, milvus, qdrant, pinecone, weaviate, …)   [others: see Coverage]
-│   ├── loaders/           # 9 document loaders (mineru, mistral, youtube, …)   [see Coverage]
+│   ├── loaders/           # document loaders (mineru, mistral, youtube, …)   [see Coverage]
 │   ├── models/            # rerankers (base_reranker, colbert, external)       [see Coverage]
-│   └── web/               # ~33 web-search providers (brave, exa, searxng, …)  [see Coverage]
+│   └── web/               # web-search providers (brave, exa, searxng, …)  [see Coverage]
 │
-├── routers/               # ~22 feature routers                -> routers (chats/files/retrieval/utils)
+├── routers/               # feature routers                    -> routers (chats/files/retrieval/utils)
 │   │                      #   documented: chats, files, retrieval, utils
 │   └── (configs, models, groups, users, prompts, tools, functions, images,
 │        notes, folders, memories, tasks, terminals, pipelines, scim,
@@ -477,7 +477,7 @@ What this map does and does not assert.
   `routers/channels.py` — are referenced by their docs but do not appear in the snapshot's
   `routers/` listing. They are treated as authoritative from the docs. Before relying on the
   map as exhaustive, regenerate it from the repo root.
-- **Documented vs. undocumented areas.** The 19 component docs cover the bootstrap, request
+- **Documented vs. undocumented areas.** The component docs cover the bootstrap, request
   pipeline, RAG core + pgvector, real-time layer, persistence, shared-state/coordination, and
   rendering. Areas present in the tree but **not yet given a dedicated doc** include: the
   non-core feature routers (`configs`, `models`, `groups`, `users`, `prompts`, `tools`,
@@ -485,7 +485,7 @@ What this map does and does not assert.
   `scim`, plus the Extended `analytics`, `evaluations`, `automations`, `calendar`, `skills`);
   the non-pgvector vector backends (chroma, milvus, qdrant, pinecone, weaviate, opensearch,
   elasticsearch, oracle23ai, opengauss, mariadb_vector, s3vector, valkey); the document
-  `loaders/` and ~33 web-search providers under `retrieval/web/`; `utils/telemetry/`,
+  `loaders/` and the web-search providers under `retrieval/web/`; `utils/telemetry/`,
   `utils/mcp/`, `utils/code_interpreter.py`, `storage/provider.py`, and `tools/`. These are
   candidates for future component docs.
 

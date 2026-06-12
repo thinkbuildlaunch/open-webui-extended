@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8 / Directive 11.
+# Machine-readable anchor block — see I.8 / Part II.
 covers_files:
   - backend/open_webui/utils/payload.py
   - backend/open_webui/utils/misc.py

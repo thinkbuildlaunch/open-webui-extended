@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8.
+# Machine-readable anchor block — see I.8.
 covers_files:
   - backend/open_webui/internal/db.py
   - backend/open_webui/env.py
@@ -54,7 +54,7 @@ model layer for all persistent data.
 
 > There is **no** `internal/wrappers.py` and **no** `internal/migrations/` directory at
 > time of writing — the legacy Peewee connection wrapper and Peewee migration set have
-> been removed (confirm with the verification recipe; per Directive 3, prove absence with
+> been removed (confirm with the verification recipe; per I.3, prove absence with
 > a root-level `find`, not a single failed lookup).
 
 ### Models
@@ -99,7 +99,7 @@ Branches, in order (check the `if/elif/else` chain around `SQLALCHEMY_DATABASE_U
    custom `creator` (`create_sqlcipher_connection`, which opens via `sqlcipher3` and runs
    `PRAGMA key`). Uses `QueuePool` when `DATABASE_POOL_SIZE` is an int `> 0`, otherwise
    `NullPool`.
-   > **Directive 6 — intentional, do not "fix".** `NullPool` is the deliberate default
+   > **I.6 — intentional, do not "fix".** `NullPool` is the deliberate default
    > here. The dummy `sqlite://` URL would otherwise make SQLAlchemy pick
    > `SingletonThreadPool`, which can non-deterministically close in-use connections when
    > the thread count exceeds the pool size — segfaulting the native `sqlcipher3` C
@@ -124,7 +124,7 @@ The runtime URL is derived by `_make_async_url(SQLALCHEMY_DATABASE_URL)`:
 
 Pooling mirrors the sync logic with one SQLite-specific twist:
 
-> **Directive 5/6 — surprising default with a reason.** For SQLite the async engine uses
+> **I.5/I.6 — surprising default with a reason.** For SQLite the async engine uses
 > `pool_size = DATABASE_POOL_SIZE` when that is a positive int, otherwise a generous
 > hard-coded `512` (the literal in `db.py` at time of writing). Async coroutines without
 > session sharing create high concurrent connection demand, so the default is sized far
@@ -363,7 +363,7 @@ grep -rn "def run_migrations\|command.upgrade\|ENABLE_DB_MIGRATIONS" backend/ope
 grep -rn "def get_existing_tables\|def get_revision_id\|hex\[:12\]" backend/open_webui/migrations/util.py
 ls backend/open_webui/migrations/versions/7e5b5dc7342b_init.py
 
-# Peewee system is GONE (prove absence — Directive 3)
+# Peewee system is GONE (prove absence — I.3)
 ls backend/open_webui/internal/wrappers.py 2>/dev/null || echo "wrappers.py absent (expected)"
 ls -d backend/open_webui/internal/migrations 2>/dev/null || echo "internal/migrations absent (expected)"
 

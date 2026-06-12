@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8.
+# Machine-readable anchor block — see I.8.
 covers_files:
   - src/routes/+layout.svelte
   - backend/open_webui/socket/main.py
@@ -81,7 +81,7 @@ unparseable — treat the symbols as the source of truth, not these copies.
   `SESSION_POOL`; if present, rewrites the entry with a fresh `last_seen_at` (current
   Unix time) and **awaits** `Users.update_last_active_by_id(user["id"])`.
 
-> **Directive 4 — contract, not a copy.** The handler `await`s
+> **I.4 — contract, not a copy.** The handler `await`s
 > `Users.update_last_active_by_id()` directly. That method is `async def` and runs its
 > `UPDATE … SET last_active_at` through an `AsyncSession` (`get_async_db_context()` in
 > `models/users.py`) — it is **not** a synchronous DB call dispatched to a thread pool.
@@ -194,7 +194,7 @@ are plain Python dicts.
   across them. See [redis.md](./redis.md).
 - **SQLAlchemy** — each heartbeat awaits `Users.update_last_active_by_id()`, persisting
   `last_active_at` beyond the in-memory/Redis session state. It is fully async (see the
-  Directive 4 note above).
+  I.4 note above).
 - **WebSockets** — heartbeats ride the Socket.IO connection; the client clears its
   interval when the socket drops, and Engine.IO ping/pong is the first line of defense
   for connection health.

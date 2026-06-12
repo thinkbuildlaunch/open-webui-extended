@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8.
+# Machine-readable anchor block — see I.8.
 covers_files:
   - backend/open_webui/utils/redis.py
   - backend/open_webui/socket/utils.py
@@ -51,7 +51,7 @@ multi-instance (horizontally scaled) deployments.
 
 > No dedicated Redis/Sentinel test module exists at time of writing. Before adding a
 > reference to one, prove it exists from the repo root (`find . -name 'test_*redis*'`),
-> per Directive 3 — a path miss is not proof of absence, but an empty find result is.
+> per I.3 — a path miss is not proof of absence, but an empty find result is.
 
 ---
 
@@ -194,7 +194,7 @@ and `MODELS`.
   `__len__`, `keys()`, `values()`, `items()`, `get()`, `set()`, `clear()`, `update()`,
   `setdefault()`.
 
-> **Directive 6 — intentional-looking-wrong code.** `RedisDict.set(mapping)`
+> **I.6 — intentional-looking-wrong code.** `RedisDict.set(mapping)`
 > deliberately **never** `DELETE`s the whole hash. It issues an `HSET` of all new values
 > and then an `HDEL` of only the now-absent keys — specifically so concurrent readers
 > never observe a momentarily empty dict. It additionally caches a per-process SHA-256
@@ -294,7 +294,7 @@ grep -rn "def get_redis_connection\|def get_redis_client\|class SentinelRedisPro
 
 # Data structures
 grep -rn "class RedisDict\|class RedisLock\|class YdocManager\|COMPACTION_THRESHOLD" backend/open_webui/socket/utils.py
-# The intentional non-DELETE bulk set (Directive 6)
+# The intentional non-DELETE bulk set (I.6)
 grep -rn "never DELETE the whole hash\|def set(self, mapping" backend/open_webui/socket/utils.py
 
 # Task pub/sub
@@ -319,6 +319,6 @@ grep -rn "REDIS_URL\|REDIS_CLUSTER\|REDIS_KEY_PREFIX\|REDIS_SENTINEL_MAX_RETRY_C
 # Telemetry hook
 grep -rn "def redis_request_hook\|RedisInstrumentor().instrument" backend/open_webui/utils/telemetry/instrumentors.py
 
-# Confirm there is NO redis test module (Directive 3: prove absence)
+# Confirm there is NO redis test module (I.3: prove absence)
 find . -name 'test_*redis*'
 ```

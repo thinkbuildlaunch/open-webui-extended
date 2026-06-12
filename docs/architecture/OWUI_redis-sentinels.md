@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8 / Directive 11.
+# Machine-readable anchor block — see I.8 / Part II.
 covers_files:
   - backend/open_webui/utils/redis.py
   - backend/open_webui/env.py
@@ -38,7 +38,7 @@ connection retries on failover, without callers having to know a failover occurr
 > `backend/open_webui/test/` directory and no `test_*redis*` file anywhere in the tree
 > (`find . -name 'test_*redis*'` is empty). A prior version of this doc described a
 > `backend/open_webui/test/util/test_redis.py` "comprehensive test suite" — it does not
-> exist. Per Directive 3, confirm with the root-level `find` before re-adding any such
+> exist. Per I.3, confirm with the root-level `find` before re-adding any such
 > reference.
 
 ---
@@ -113,7 +113,7 @@ and **no** `_master()` method; master resolution is `_resolve_master()`, which r
   re-resolves the master, so Sentinel returns the freshly-promoted one.
 - When retries are exhausted, `_log_exhausted()` runs and the exception is re-raised.
 
-> **Exact log wording (Directive 5 — don't paraphrase from memory).** `_log_retry` formats
+> **Exact log wording (I.5 — don't paraphrase from memory).** `_log_retry` formats
 > `'Sentinel failover (%s) — retry %d/%d'` with the exception class name, `attempt + 1`, and
 > `REDIS_SENTINEL_MAX_RETRY_COUNT` — e.g. `Sentinel failover (ConnectionError) — retry 1/2`.
 > It is **not** `"Redis sentinel fail-over (…). Retry 1/2"`.
@@ -250,7 +250,7 @@ grep -rn "def parse_redis_url\|parse_redis_service_url = parse_redis_url" backen
 # Env var: <1 resets to 2 (not min 1)
 grep -rn "REDIS_SENTINEL_MAX_RETRY_COUNT" backend/open_webui/env.py
 
-# Sentinel test module does NOT exist (Directive 3 — prove absence from root)
+# Sentinel test module does NOT exist (I.3 — prove absence from root)
 find . -name 'test_*redis*' -not -path './node_modules/*'   # expected: no output
 ls backend/open_webui/test 2>/dev/null || echo "no backend/open_webui/test dir (expected)"
 ```

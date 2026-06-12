@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8 / Directive 11.
+# Machine-readable anchor block — see I.8 / Part II.
 covers_files:
   - backend/open_webui/socket/main.py
   - backend/open_webui/socket/utils.py
@@ -90,7 +90,7 @@ CRDT documents are managed by `YdocManager` (§8). Handlers (all in `socket/main
 - Plus `ydoc:document:state`, `ydoc:awareness:update`, `ydoc:document:leave` (clears the doc
   when the last editor leaves).
 
-> **Directive 6 — `normalize_document_id` is a security control.** `YdocManager` stores keys
+> **I.6 — `normalize_document_id` is a security control.** `YdocManager` stores keys
 > with `:`→`_`, so `normalize_document_id` rewrites underscore-prefixed ids back to the colon
 > form *before* the `note:` access check — without it, `note_abc` would dodge authorization.
 > The per-update write re-check is likewise deliberate.

@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8.
+# Machine-readable anchor block — see I.8.
 covers_files:
   - backend/open_webui/socket/main.py
   - backend/open_webui/socket/utils.py
@@ -77,7 +77,7 @@ A single `sio = socketio.AsyncServer(...)` is created with `async_mode="asgi"`,
   Redis URL, rebuilt into a `redis+sentinel://` form when sentinels are configured).
   Without Redis, no manager is set and fan-out is local only.
 
-> **Directive 5 — ping values come from symbols, not literals.** `ping_interval` and
+> **I.5 — ping values come from symbols, not literals.** `ping_interval` and
 > `ping_timeout` are set to `WEBSOCKET_SERVER_PING_INTERVAL` / `WEBSOCKET_SERVER_PING_TIMEOUT`
 > (defaults `25` / `20` seconds at time of writing), **not** hard-coded `25`/`20`. See
 > [heartbeats.md](./heartbeats.md) Layer 1 for how these drive dead-connection detection.
@@ -94,7 +94,7 @@ in `main.py` via `app.mount("/ws", socket_app)`.
 `/ws/socket.io` that claim `transport=websocket` but lack a valid `Upgrade: websocket` /
 `Connection: upgrade` header pair, returning HTTP 400.
 
-> **Directive 4/6 — it's a middleware class now, not a decorator.** A prior version of
+> **I.4/I.6 — it's a middleware class now, not a decorator.** A prior version of
 > this doc showed an `@app.middleware("http")` function named `inspect_websocket`. The
 > current implementation is the ASGI class above; the logic and rationale are unchanged —
 > it works around python-engineio issue #367, where engineio mishandles such requests.
@@ -148,7 +148,7 @@ published to the `socket` store and liveness to `socketConnected` (`stores/index
 `get_event_emitter(request_info, update_db=True)` returns an async emitter for streaming
 model output.
 
-> **Directive 4/6 — two behaviors the old doc missed.**
+> **I.4/I.6 — two behaviors the old doc missed.**
 > 1. **Channel mode**: when `request_info["chat_id"]` starts with `"channel:"`, the factory
 >    returns a dedicated channel emitter (`_make_channel_emitter`) that writes model output
 >    into a channel message instead of a chat. The default emitter handles per-user chats.
@@ -177,7 +177,7 @@ Handlers: `join-note`, `ydoc:document:join`, `ydoc:document:state`,
 `YdocManager` (Redis Lists/Sets, or in-memory dicts) and clients sit in the
 `doc_{document_id}` room.
 
-> **Directive 6 — two security checks that look removable but are not.**
+> **I.6 — two security checks that look removable but are not.**
 > - `normalize_document_id()` rewrites underscore-prefixed IDs (`note_abc`) back to the
 >   colon form (`note:abc`) **before** authorization. `YdocManager` stores keys with `:`
 >   replaced by `_`, so without this rewrite an attacker could pass `note_abc` to dodge the
@@ -306,7 +306,7 @@ grep -rn "add_middleware(WebsocketUpgradeGuardMiddleware)" backend/open_webui/ma
 # Key handlers + signatures
 grep -rn "async def connect(\|async def disconnect(sid, reason\|async def user_join(\|def get_event_emitter\|def get_event_call\|def _make_channel_emitter\|@sio.on('events:chat')" backend/open_webui/socket/main.py
 
-# Security-critical ydoc checks (Directive 6)
+# Security-critical ydoc checks (I.6)
 grep -rn "def normalize_document_id\|room membership only proves read access\|permission='write'" backend/open_webui/socket/main.py
 
 # Event-caller timeout default is None; 300 is only the bad-value fallback

@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8.
+# Machine-readable anchor block — see I.8.
 covers_files:
   - backend/open_webui/config.py
   - backend/open_webui/main.py
@@ -142,7 +142,7 @@ the AnyIO limiter.
   queries that may hit different backends.
 - **Pinecone batch upsert** (`retrieval/vector/dbs/pinecone.py`):
   `self._executor = ThreadPoolExecutor(max_workers=5)`.
-  > **Directive 4/5 — describe the real wiring.** The 5-worker executor is used by the
+  > **I.4/I.5 — describe the real wiring.** The 5-worker executor is used by the
   > **sync** batch path (`self._executor.submit(self.index.upsert, vectors=batch)`), and is
   > shut down via `self._executor.shutdown(wait=True)`. The 5 workers bound concurrent
   > batch submissions against the Pinecone client, which itself runs `pool_threads=20`
@@ -166,7 +166,7 @@ managed pool that backs `to_thread`); passing an explicit executor uses that one
 
 ## Thread Pool Sizing Guidelines
 
-> **Directive 6 — the old DB coupling no longer applies.** Because runtime DB access is
+> **I.6 — the old DB coupling no longer applies.** Because runtime DB access is
 > async (it does not consume AnyIO tokens), the previous rule
 > `THREAD_POOL_SIZE >= DATABASE_POOL_SIZE + DATABASE_POOL_MAX_OVERFLOW` is obsolete. Do not
 > reintroduce it. The two pools are now independent:

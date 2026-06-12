@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see Directive 8 / Directive 11.
+# Machine-readable anchor block — see I.8 / Part II.
 covers_files:
   - backend/open_webui/internal/db.py
   - backend/open_webui/config.py
@@ -31,7 +31,7 @@ async `async_engine` for all runtime queries — with SQLite, SQLCipher, and Pos
 > **What changed since the original guide (it was very stale).**
 > - **Peewee is entirely removed.** There is no `handle_peewee_migration`, no
 >   `peewee_migrate.Router`, no `register_connection`, no `internal/wrappers.py`, and no
->   `internal/migrations/` directory (confirm with the recipe; per Directive 3 the absence is
+>   `internal/migrations/` directory (confirm with the recipe; per I.3 the absence is
 >   proven from the repo root). Migrations are pure **Alembic**, run from `config.py`'s
 >   `run_migrations()` (gated by `ENABLE_DB_MIGRATIONS`).
 > - **Dual sync/async engine.** The original described only the sync engine; runtime now uses
@@ -125,7 +125,7 @@ Run from the repo root. Symbol resolution for manual `git log -L` uses the overr
 `docs/DOCUMENTATION_STANDARD.md`.
 
 ```bash
-# Peewee is gone (prove absence — Directive 3)
+# Peewee is gone (prove absence — I.3)
 grep -rn "peewee_migrate\|register_connection\|handle_peewee_migration" backend/open_webui/internal/db.py || echo "no peewee (expected)"
 ls backend/open_webui/internal/wrappers.py 2>/dev/null || echo "wrappers.py absent (expected)"
 ls -d backend/open_webui/internal/migrations 2>/dev/null || echo "internal/migrations absent (expected)"
