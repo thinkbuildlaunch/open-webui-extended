@@ -134,6 +134,6 @@ grep -rn "file-\|web-search-" backend/open_webui/retrieval/utils.py | head
 ```
 
 > Before advancing this doc's marker, replace the `whole_file` model anchors with `{symbol, file}`
-> anchors for the specific classes/relationships once `models/` has been read (Standard 11.7/11.8), and
+> anchors for the specific classes/relationships once `models/` has been read (Standard II.7/II.8), and
 > confirm every relationship above against the actual columns. This first pass is intentionally
 > conservative about field-level claims.

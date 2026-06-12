@@ -2,7 +2,7 @@
 
 > **Purpose:** route a task to the right document. For humans and AI agents.
 > **Verification:** this is a navigation doc — it is **link-verified, not symbol-verified**
-> (`DOCUMENTATION_STANDARD.md`, Directive 8). It carries no code anchors of its own; the docs it
+> (`DOCUMENTATION_STANDARD.md`, I.8). It carries no code anchors of its own; the docs it
 > points to do. It carries no volatile counts; those live in `FILE_TREE.md` (Standard III.4).
 
 There are three bands of documentation. Keep them straight:

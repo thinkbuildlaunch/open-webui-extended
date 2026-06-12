@@ -1,6 +1,6 @@
 ---
-# Procedural directive, anchored per Directive 8. Symbols below are drawn from sqlalchemy.md /
-# database-infrastructure.md and must be re-read before the marker is advanced (11.3/11.7).
+# Procedural directive, anchored per I.8. Symbols below are drawn from sqlalchemy.md /
+# database-infrastructure.md and must be re-read before the marker is advanced (II.3/II.7).
 covers_files:
   - backend/open_webui/internal/db.py
   - backend/open_webui/config.py
@@ -132,4 +132,4 @@ grep -rni "autogenerate\|alembic" backend/ | head
 
 > **Caveat (confirm before trusting):** the exact revision-authoring workflow (manual vs `--autogenerate`)
 > and any project-specific revision-id scheme were not read from the repo for this draft. Verify via the
-> recipe and update this directive before advancing its marker (Standard 11.3).
+> recipe and update this directive before advancing its marker (Standard II.3).

@@ -1,5 +1,5 @@
 ---
-# Anchored per Directive 8 — each entry below makes a falsifiable code claim. The block lists
+# Anchored per I.8 — each entry below makes a falsifiable code claim. The block lists
 # representative anchors; the per-entry citations are the individual falsifiable references.
 covers_files:
   - backend/open_webui/socket/main.py
@@ -29,7 +29,7 @@ verified_against_commit: <PLACEHOLDER — fill at first in-repo reconciliation>
 A disambiguation reference for the terms most often confused in this codebase. Unlike a business
 glossary, the "domain" here is the platform's own infrastructure vocabulary, and the most valuable
 entries say **what a term is, where it lives, and what it is *not*.** Each entry cites the file and
-symbol so the claim is checkable (Directive 9); see the named component doc for depth.
+symbol so the claim is checkable (I.9); see the named component doc for depth.
 
 ---
 
@@ -53,7 +53,7 @@ not a dict. Any doc or code referencing `USER_POOL` is describing a previous/fic
 **`RedisDict`** — a Redis-hash-backed dict that makes the pools visible across instances. `socket/utils.py`.
 **Deliberately never `DELETE`s the hash** on bulk set — it `HSET`s new values then `HDEL`s stale keys so
 concurrent readers never see an empty dict. Do not "optimize" to atomic `DELETE`+`HSET`. See `redis.md`,
-Standard Directive 6.
+Standard I.6.
 
 **`RedisLock`** — distributed lock for cleanup coordination (only one instance runs a reaper loop).
 `socket/utils.py`. See `heartbeats.md`, `redis.md`.

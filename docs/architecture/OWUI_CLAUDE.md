@@ -3,7 +3,7 @@
 > Agent + developer bootstrap for the Open WebUI Extended backend. This file is intentionally
 > free of code anchors and volatile counts; it points at anchored docs that carry both. Items
 > marked **(confirm against repo)** were not yet read from the source scripts and must be
-> verified before they are trusted — per `DOCUMENTATION_STANDARD.md` Directive 3.
+> verified before they are trusted — per `DOCUMENTATION_STANDARD.md` I.3.
 
 ## What This Is
 
@@ -91,7 +91,7 @@ the code before acting — do not "fix" the code to match a stale belief.
 - **`RedisDict` bulk-set deliberately never `DELETE`s the hash** — it `HSET`s new values then `HDEL`s
   stale keys, specifically so concurrent readers never observe an empty dict. Do **not** refactor it
   to "atomic `DELETE` + `HSET`"; that reintroduces the race. (`redis.md`, `DOCUMENTATION_STANDARD.md`
-  Directive 6)
+  I.6)
 - **Pipelines are legacy.** A Pipeline pipe → use a **Pipe Function**; a Pipeline filter → use a
   **Filter Function**. Don't build new features on Pipelines. (Project knowledge: official Filters /
   Functions docs.)
@@ -110,16 +110,16 @@ All architecture/component docs follow `DOCUMENTATION_STANDARD.md`. The rules an
 often:
 
 - **Anchor, don't transcribe.** Cite symbols (`grep`-able), never line numbers. Describe the contract
-  and the *why*; never paste implementation that will rot (Directives 1, 4).
+  and the *why*; never paste implementation that will rot (I.1, I.4).
 - **One source of truth per number.** Name the symbol; mark the value as "at time of writing." Aggregate
   counts (routers, models, migrations, LOC) live **only** in the dated `FILE_TREE.md`, never in prose
-  (Directive 5, III.4).
-- **Every doc opens with an anchor block and closes with a verification recipe** (Directives 8, 10).
+  (I.5, III.4).
+- **Every doc opens with an anchor block and closes with a verification recipe** (I.8, I.10).
 - **Advance a marker only as the output of a re-read** — never silent-bump, bump-to-green, or batch-bump
-  (Directive 11.3).
-- **Prove absence from the repo root before deleting any reference** (Directive 3).
+  (II.3).
+- **Prove absence from the repo root before deleting any reference** (I.3).
 - **Flag deliberate-but-surprising code loudly** so the next agent doesn't "fix" it into a bug
-  (Directive 6).
+  (I.6).
 
 ## Code Conventions (from the corpus; confirm before extending)
 
@@ -140,7 +140,7 @@ often:
 1. If you added, removed, or renamed files: update `FILE_TREE.md` (it carries the date and all volatile
    counts).
 2. If you changed code a doc covers: re-read the affected doc and **advance its marker as the output of
-   that re-read** (Standard 11.3) — fix prose and `covers_symbols` together, or record the affirmation.
+   that re-read** (Standard II.3) — fix prose and `covers_symbols` together, or record the affirmation.
 3. If the change is architecturally significant: note it where the project tracks change history.
 4. If you discovered a convention an agent gets wrong repeatedly: add a concise line here; if a line here
    no longer applies, delete it.

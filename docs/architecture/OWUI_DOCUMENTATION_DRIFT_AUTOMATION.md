@@ -27,8 +27,8 @@ source. The governing fact (Standard III.2): for an extended fork of a mature up
 drift event is the upstream merge, not your own edits.** Everything below optimizes for that.
 
 Design constraints carried from the standard:
-- Symbol-granular, never file-granular (11.2).
-- Divergent markers are healthy; never enforce a shared SHA (11.4).
+- Symbol-granular, never file-granular (II.2).
+- Divergent markers are healthy; never enforce a shared SHA (II.4).
 - The check proves *no covered symbol moved*, not *the right symbols are covered* (III.3) — hence the
   coverage-gap advisory.
 - Tooling is pinned to `python-yq` and the extended funcname drivers (III.1).
@@ -57,9 +57,9 @@ On any pull request whose diff touches `backend/` or `src/`:
 1. Run `tools/check_doc_staleness.sh` (the standard's symbol-granular check).
 2. For any STALE doc, use the reverse index to attribute it to the changed symbol(s) and post a PR comment:
    *"`<symbol>` in `<file>` changed; re-audit `<doc>` and advance its marker as the output of that re-read
-   (Standard 11.3) — do not bump-to-green."*
+   (Standard II.3) — do not bump-to-green."*
 
-This is advisory-with-teeth: it doesn't auto-bump anything (auto-bump is the exact dishonest move 11.3
+This is advisory-with-teeth: it doesn't auto-bump anything (auto-bump is the exact dishonest move II.3
 forbids); it names the docs a human/agent must reconcile.
 
 ## 3. Upstream-merge trigger (the primary one)
@@ -68,7 +68,7 @@ On every merge of upstream into the fork:
 
 1. Run `tools/check_doc_staleness.sh` against the post-merge HEAD.
 2. The resulting STALE list **is** that merge's documentation-reconciliation worklist.
-3. Reconcile each STALE doc (re-read → fix prose + `covers_symbols` together, or record the 11.3
+3. Reconcile each STALE doc (re-read → fix prose + `covers_symbols` together, or record the II.3
    affirmation), then advance its marker.
 
 Rationale (Standard III.2): `git log -L` can behave unreliably across the large merge/squash/rebase commits
@@ -107,7 +107,7 @@ surface area.
 
 ## 6. Timestamping (the one honest aggregate)
 
-Per-doc "last updated" dates are banned (Directive 8). Maintain exactly **one** dated corpus-level fact —
+Per-doc "last updated" dates are banned (I.8). Maintain exactly **one** dated corpus-level fact —
 in `FILE_TREE.md` or the index — of the form *"docs reconciled against upstream as of `<tag/date>`."* This is
 the single source of truth for how current the whole corpus is relative to upstream, distinct from the
 per-doc markers (Standard III.5).

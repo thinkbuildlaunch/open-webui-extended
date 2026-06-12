@@ -1,5 +1,5 @@
 ---
-# Machine-readable anchor block — see the documentation standard, Directive 8.
+# Machine-readable anchor block — see the documentation standard, I.8.
 # This is the top-level INDEX / OVERVIEW. It is deliberately broad and shallow:
 # per-component facts, symbol-level detail, and the falsifiable verification recipes
 # live in the linked component docs below, each of which carries its own anchor block
